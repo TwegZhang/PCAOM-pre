@@ -1,0 +1,13 @@
+- id: subagent-codex
+  config:
+    providerName: codex
+    permissionMode: never
+
+- insert:
+    - id: tool-subagent-codex
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: codex
+        toolName: subagent_codex
+        backgroundMode: one-shot
+        maxDepth: provider-managed

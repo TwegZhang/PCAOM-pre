@@ -1,0 +1,22 @@
+{
+  "schema_version": 0,
+  "target": "larry-dsh-headless",
+  "status": "runtime-smoke-verified",
+  "runtime_ref": {
+    "repository": "deepseek-ai/deepseek-harness",
+    "revision": "a4c74a91e06b00fe0b0937bde982170c526cc842",
+    "cli_package": "@deepseek-ai/dsh",
+    "cli_version": "0.1.5-rc.3",
+    "maturity": "developer-preview"
+  },
+  "capabilities": {
+    "deepseek_execution": "runtime-smoke-verified",
+    "project_instructions": "runtime-smoke-verified",
+    "codex_delegation": "runtime-smoke-verified",
+    "goal": "in-box-unverified",
+    "team": "disabled",
+    "schedule": "disabled",
+    "saved_workflow": "unsupported"
+  },
+  "install_location": "$DSH_HOME/profiles/larry-dsh-headless"
+}

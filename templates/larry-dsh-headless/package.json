@@ -1,0 +1,17 @@
+{
+  "name": "dsh-profile-larry-dsh-headless",
+  "private": true,
+  "dependencies": {
+    "@deepseek-ai/dsh-subagent-codex": "0.1.5-rc.3"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-headless",
+        "@deepseek-ai/dsh-subagent-codex"
+      ],
+      "patchReload": "startup"
+    }
+  }
+}
