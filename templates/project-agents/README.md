@@ -8,9 +8,18 @@ evidence of runtime execution.
 
 - `AGENTS.wrapper.md`: minimal root wrapper with a project-owned section and one
   PCAOM managed block.
-- `AGENTS.generated.md`: compiler-owned common base policy intended for
-  `.pcaom/AGENTS.generated.md`, with project-specific inputs applied by the
-  Reference Compiler.
+- `AGENTS.common.md`: target-neutral authority, feature design, blocker,
+  verification, and data/credential policy.
+- `targets/larry-dsh-headless.md`: Larry DSH execution ownership and review policy.
+- `targets/codex-omx-ds41-supervised-team.md`: DS41 execution ownership and
+  Official Codex supervision and review policy.
+- `AGENTS.generated.md`: Larry compatibility fixture until the deterministic
+  emitter is implemented. It contains the full common policy followed by the
+  Larry target policy, separated by one newline, for `.pcaom/AGENTS.generated.md`.
+
+Future emitters must select exactly one target policy and combine it with the
+common policy, applying project-specific inputs through the Reference Compiler.
+The compatibility fixture does not activate the DS41 target.
 
 ## Existing Projects
 

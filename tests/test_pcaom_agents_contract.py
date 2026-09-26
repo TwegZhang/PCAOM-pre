@@ -6,6 +6,45 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PcaomAgentsContractTests(unittest.TestCase):
+    def read_policy(self, name: str) -> str:
+        return self.read_required(f"templates/project-agents/{name}")
+
+    def test_common_policy_is_target_neutral(self) -> None:
+        common = self.read_policy("AGENTS.common.md")
+        for forbidden in ("Larry", "DSH", "deepseek-flash", "OMX Team", "Codex", "fan-out"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, common)
+        for required in ("FEATURE_SPEC.md", "BLOCKED_ARCHITECTURE", "BLOCKED_POLICY_CONFLICT",
+                         "Human owns product scope and architecture", "fresh",
+                         "Data and Credential Boundaries", "project-owned instructions"):
+            with self.subTest(required=required):
+                self.assertIn(required, common)
+
+    def test_target_policies_define_execution_ownership(self) -> None:
+        larry = self.read_policy("targets/larry-dsh-headless.md")
+        ds41 = self.read_policy("targets/codex-omx-ds41-supervised-team.md")
+        self.assertEqual(larry.count("Larry DSH is the only execution-plane fan-out owner"), 1)
+        self.assertEqual(ds41.count("DS41 Codex Leader is the only execution-plane fan-out owner"), 1)
+        for required in (
+            "Official Codex must not edit code while DS41 Team is active",
+            "BLOCKED_ARCHITECTURE", "BLOCKED_POLICY_CONFLICT", "fresh",
+            "A stronger model alone does not justify fan-out",
+            "Switching targets requires an explicit handoff after the current runtime reaches a terminal state",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, ds41)
+
+    def test_generated_policy_is_common_plus_larry_compatibility_fixture(self) -> None:
+        generated = self.read_policy("AGENTS.generated.md")
+        policy_root = ROOT / "templates/project-agents"
+        self.assertEqual(
+            (policy_root / "AGENTS.generated.md").read_bytes(),
+            (policy_root / "AGENTS.common.md").read_bytes()
+            + b"\n"
+            + (policy_root / "targets/larry-dsh-headless.md").read_bytes(),
+        )
+        self.assertNotIn("deepseek-flash", generated)
+
     def read_required(self, name: str) -> str:
         path = ROOT / name
         self.assertTrue(path.is_file(), f"missing project artifact: {path}")
