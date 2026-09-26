@@ -2,11 +2,18 @@
 
 Project-Compiled Agent Operating Model：面向具体软件项目，把需求、架构、代码库事实、方法经验、可用 Agent 能力和风险/成本约束，编译成最小充分、可解释、可演化的 Agent operating model。
 
-当前第一个具体编译目标是 **Larry DSH Profile**：Human + Codex 负责需求、架构、困难问题和最终验收，DSH + DeepSeek 负责低成本持续执行。PCAOM 低频生成“通用 Base Profile + 项目 Overlay”，项目内每个需求只生成 `FEATURE_SPEC.md` 并复用该 Profile。
+当前提供两个并行的 target bundles：**Larry DSH Profile** 与 **Codex + OMX + DS41 supervised Team**。Human + 官方 Codex 负责需求、架构和最终验收；项目显式选择一个执行目标。Larry 内由 DSH + DeepSeek 执行，DS41 内由独立 DS41 Codex Leader 拥有 Ultragoal、Team 和执行写入。两者不得嵌套或同时接管同一任务树。
 
-## 当前状态（2026-09-25）
+## 当前状态（2026-09-27）
 
 本仓库目前处于 **formalization / early implementation** 阶段：研究、Compiler Contract V0、双层工作流和 Experience Library V0 已记录；Larry DSH Headless Base Profile V0 已安装，并在真实 SSH + tmux 环境通过 DeepSeek、项目 `AGENTS.md` 和 Codex one-shot 三项 runtime smoke test；compiler、CLI、真实项目 dogfood 和 benchmark 尚未实现。
+
+deterministic reference compiler/emitter 尚未实现；profiler、Project IR validator 和确定性生成 CLI 仍是后续工作。静态 bundle、独立安装器、Skill 与 Bridge 不等于完整 Compiler。
+
+| Target bundle | 当前能力与证据边界 |
+| --- | --- |
+| [larry-dsh-headless](templates/larry-dsh-headless/README.md) | `runtime-smoke-verified` 仅覆盖上述三项，见 [历史 observation](docs/observations/2026-09-25-larry-dsh-runtime-smoke.md)；真实实现、Team、恢复和 dogfood 未验证。 |
+| [codex-omx-ds41-supervised-team](templates/codex-omx-ds41-supervised-team/README.md) | 静态 bundle、installer、Skill、Bridge 已实现；整体 `generated-unverified`，Bridge `experimental-unverified`，provider/Team/worktree/恢复/最终审查均 `runtime-unverified`。只有后续 observation 才能逐项晋升。 |
 
 已完成：
 
@@ -16,7 +23,7 @@ Project-Compiled Agent Operating Model：面向具体软件项目，把需求、
 - 定义 Compiler Contract V0：输入、输出、manifest/control schema、不变量、验收标准和非目标。
 - 明确双层 AI Coding 工作流、项目级/需求级边界，以及 Larry DSH Profile 作为第一个编译目标。
 - 建立 PCAOM 根 `AGENTS.md` 与下游项目 AGENTS wrapper/generated-policy 模板，锁定项目人工规则优先和非破坏式融合边界。
-- 建立 Experience Library V0：31 条 Native Codex、Superpowers、OMX、verification 和 anti-pattern 条目，统一记录适用条件、成本、证据与编译指导。
+- 建立 Experience Library V0：Native Codex、Superpowers、OMX、verification 和 anti-pattern 条目，统一记录适用条件、成本、证据与编译指导；新增 OMX-006 supervised DS41 Team 候选模式，尚非 dogfood 事实。
 - 按固定官方 revision 核实 DSH Profile、Preset、Goal、experimental Team、Workflow、Schedule 和 Codex provider 的真实能力边界。
 - 生成 Larry DSH Headless Base Profile V0，并用静态测试锁定 bundle、Codex delegation、执行 policy 和 `generated-unverified` 状态。
 - 在本机安装匹配的 DSH/Provider `0.1.5-rc.3`，部署 Profile patch，并由 `--dump-config` 确认 `subagent_codex` one-shot 工具已进入合成配置。
@@ -55,9 +62,9 @@ Project-Compiled Agent Operating Model：面向具体软件项目，把需求、
 ## 下一次 Codex 启动提示
 
 ```text
-先读 README.md，再读 docs/methodology/compiler-contract-v0.md、docs/superpowers/specs/2026-09-25-pcaom-dsh-two-layer-design.md、experience/、docs/theory/、docs/methodology/、docs/research/ 和 phased plan。DSH 实现以 docs/research/dsh-capability-study.md 固定的官方 revision 为准。
+先读 README.md、AGENTS.md、Compiler Contract 和使用指南，再按显式选择的 target 阅读对应 bundle README、设计与证据。Larry 实现以 docs/research/dsh-capability-study.md 固定的官方 revision 为准；DS41 使用其 bundle 固定的 Codex/OMX/tmux 版本。
 
-请先做 recap：说明 PCAOM 的目标、已完成文档、Contract V0 的边界、双层工作流、Experience Library 的证据边界、项目级 Profile 与需求级 Feature Spec 的区别、当前阶段和未完成事项。然后继续执行 phased plan 中下一个未完成阶段。保持 PCAOM 原则：强 Native Codex/DIY 是通用比较基线，Larry DSH 目标内 DeepSeek 是默认执行者；Larry DSH Base Profile + 薄 Project Overlay；低频编译 Profile、高频执行 Feature Spec；每项控制必须有 reason、benefit、runtime cost、trigger、source、verification 和 removal condition；一个控制点一个 owner；DSH 是 execution plane 的唯一 fan-out owner；不建设新的 Agent runtime；没有 dogfood 证据不要扩展复杂度。
+请先做 recap：说明 PCAOM 的目标、Contract V0、项目级 Profile 与需求级 Feature Spec 的区别、当前证据和未完成事项。静态 target bundle 不代表 Compiler 已实现。强 Native Codex/DIY 是通用比较基线；每项控制须有原因、收益、成本、触发、来源、验证和移除条件。每个任务树只有一个 execution-plane fan-out owner：Larry 为 DSH，DS41 为 DS41 Leader；不嵌套，不建设新的 runtime，没有 dogfood 证据不扩展复杂度。
 ```
 
 ## 不可越过的边界

@@ -119,3 +119,27 @@
 **Compiler Guidance:** 编译为 ownership invariant，而非额外 scheduler；明确其 scope 只覆盖当前任务树。
 
 **Removal Condition:** OMX 宏编排退出，或任务树已正式移交给另一个唯一 execution plane。
+
+## OMX-006 — Official Codex supervisor with low-cost DS41 Team
+
+**Pattern:** 官方 Codex 负责需求、有限 steering 和最终独立审查；DS41 Leader 独占 Ultragoal、Team fan-out、执行写入与聚合验证。
+
+**Level:** L4–L5
+
+**Residency:** conditional
+
+**Target:** `codex-omx-ds41-supervised-team`，与 Larry DSH 显式二选一，不嵌套。
+
+**When Useful:** 已批准 Spec，需要长期或独立并行实现，且 Human 明确授权把所需上下文传给 DeepSeek。
+
+**When Harmful:** 简单任务、强共享状态、缺少数据授权，或监督与交接成本超过收益。
+
+**Cost:** DS41 Leader/Worker Token、worktree 集成、ACK/binding 生命周期与官方 Codex 最终验证。passive status 和本地 `await-event` 不调用模型；no daemon，不能承诺跨 turn 自动监督。
+
+**Evidence:** `mechanism-inference`；等待合成 runtime smoke，不是 dogfood。静态/模拟测试只证明局部契约，provider、Team 与成本收益均未获实际执行证据。
+
+**Source:** [目标设计](../docs/superpowers/specs/2026-09-26-pcaom-codex-omx-ds41-supervised-team-design.md)、[当前 bundle/实现边界](../templates/codex-omx-ds41-supervised-team/README.md)、[使用指南](../docs/methodology/codex-omx-dsh-usage-guide.md)。
+
+**Compiler Guidance:** 仅按明确触发条件选择，绑定唯一 DS41 owner。当前 steering 是 `experimental-one-way-file-ack`：sender 未认证、反向 supervisor mailbox 不支持，失败后 named-buffer fallback 仍需精确 file ACK，降级不能晋升 runtime status。顶层 OMX status/await 会改变状态并监控，使用 passive 文件读取 + `omx team api await-event`。验证须记录精确 topology、Leader/Workers 模型、独立 worktrees、ACK → GO、隔离 state root 与 `team-bound.json` 实际 internal-name binding、resume、terminal shutdown 和官方 Codex 独立重读 diff/运行验收命令。每项能力单独关联 observation，不能以早期设计的双向 mailbox 设想作为证据。
+
+**Removal Condition:** 并行或低成本模型未降低总体成本，返工/人工干预增加，或无法保持唯一 owner、身份绑定与可靠终态；退回显式选择的单执行面基线。

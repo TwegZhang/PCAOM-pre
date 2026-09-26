@@ -1,6 +1,6 @@
 # PCAOM Compiler Contract V0
 
-**状态：** proposed；本契约只定义文档型、可解释的 reference compiler，不定义 runtime。第一个具体目标是 Larry DSH Profile。
+**状态：** proposed；本契约定义文档型、可解释的 reference compiler，不定义 runtime。Larry DSH 与 Codex + OMX + DS41 是可选目标；现有静态 bundles 不代表确定性 compiler/emitter 已实现。
 
 ## 目标
 
@@ -22,6 +22,10 @@
 
 ## 输出
 
+Project IR 必须显式提供 `execution_target`，枚举为 `larry-dsh-headless` 或 `codex-omx-ds41-supervised-team`，不根据模型或成本自动猜测目标。Adapter 输入是已批准 IR、目标对应的 capability snapshot、版本化模板、项目政策和输入 digest；输出 exactly one target adapter，与通用政策组合。目标不匹配、多个 owner 或未解决政策冲突必须失败关闭。
+
+Compiler generation 是 non-mutating：只向显式 staging directory 生成 artifact，不修改输入 repo、用户 Codex Home、tmux 或运行状态。独立 installation 在审查后显式执行，不能作为编译隐式副作用。
+
 ```text
 AGENTS.md
 .pcaom/
@@ -42,6 +46,7 @@ AGENTS.md
 ```yaml
 version: 0
 project: <identifier>
+execution_target: <larry-dsh-headless | codex-omx-ds41-supervised-team>
 inputs:
   spec: <path or digest>
   architecture: <path or digest>
@@ -54,13 +59,19 @@ escalation:
 target:
   adapter: <identifier>
   runtime_ref: <version or revision>
-  capabilities: []
+  runtime_versions: {} # adapter-owned pinned versions
+  capabilities: # per-capability evidence; no blanket runtime promotion
+    <capability>:
+      status: <generated-unverified | config-verified | runtime-unverified | experimental-unverified | runtime-smoke-verified | dogfood-verified>
+      evidence: [] # observation paths, commands, versions and gaps
   policy_enforcement:
     prompt_guidance: []
     runtime_enforced: []
 ```
 
 每个 `controls` 项至少有：`id`、`kind`、`level`、`trigger`、`reason`、`benefit`、`runtime_cost`、`source`、`verification`、`removal_condition`。`kind` 取 `rule`、`skill`、`routing`、`verification`、`parallelism` 或 `escalation`。
+
+Target adapter 声明固定版本和 per-capability 状态；IR 不能自行伪造状态。DS41 的当前 map 见 [bundle metadata](../../templates/codex-omx-ds41-supervised-team/pcaom-target.json)，Larry 的已验证范围见 [observation](../observations/2026-09-25-larry-dsh-runtime-smoke.md)。单向 file ACK、fallback、配置解析或静态测试都不能推广为全部 runtime 能力已验证。
 
 ## 不变量
 

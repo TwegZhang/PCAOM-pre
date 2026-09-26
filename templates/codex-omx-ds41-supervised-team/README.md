@@ -1,8 +1,11 @@
 # Codex + OMX + DS41 supervised Team target
 
-**Current status: `generated-unverified`.** This bundle contains static declarations;
+**Current status: `generated-unverified`.** This bundle contains static declarations,
+an implemented installer, downstream Skill, and bounded command bridge;
 passing template tests does not demonstrate provider, Team, worktree, or supervision
 runtime behavior. The supervisor bridge remains `experimental-unverified`.
+Provider, Ultragoal, Team, worktree, resume, shutdown and final review remain
+`runtime-unverified`; fake-adapter tests do not establish real execution.
 
 The approved [design](../../docs/superpowers/specs/2026-09-26-pcaom-codex-omx-ds41-supervised-team-design.md)
 defines this target. PCAOM generates reviewable artifacts; Codex and OMX own execution.
@@ -14,6 +17,7 @@ The generated bundle is intended for `.pcaom/generated/codex-omx-ds41/`:
 ```text
 pcaom-target.json
 install-manifest.json
+install.mjs
 codex/pcaom-ds41.config.toml
 codex/deepseek-models.json
 project/.codex/skills/pcaom-ds41-team/SKILL.md
@@ -42,9 +46,8 @@ also validates the profile using `tomllib`. Runtime use also requires
 an approved Feature Spec, an authorized downstream workspace and permission to
 send its task context to DeepSeek.
 
-These are the planned installer commands, run from the complete bundle directory;
-the installer, Skill, and bridge are delivered by subsequent implementation tasks.
-They cannot be exercised using the metadata-only bundle alone. Replace the example
+Run these implemented installer commands from this complete bundle directory.
+Replace the example
 absolute paths with the intended project and Codex Home:
 
 ```sh
@@ -54,8 +57,8 @@ node install.mjs uninstall --project /absolute/project --codex-home /absolute/co
 node install.mjs uninstall --project /absolute/project --codex-home /absolute/codex-home
 ```
 
-Installation must reject unmanaged conflicts; uninstall must remove only files
-whose ownership and current digest match the installation receipt. Neither command
+Installation rejects unmanaged conflicts; uninstall removes only files
+whose ownership and current digest match the paired installation receipts. Neither command
 starts Codex or a Team.
 
 Supply `DEEPSEEK_API_KEY` through the trusted launcher environment. The profile
@@ -75,6 +78,73 @@ layout uses two windows in the same session:
 Workers also use `--profile pcaom-ds41`. The supervisor independently rereads the
 workspace and runs acceptance checks after execution. This topology is a design
 contract pending runtime evidence.
+
+## Supervisor commands and lifecycle
+
+From official Codex in the downstream project, use these Skill invocations
+(they are not shell commands):
+
+```text
+$pcaom-ds41-team start --spec FEATURE_SPEC.md --workers 3
+$pcaom-ds41-team status --team <exact-team>
+$pcaom-ds41-team await --team <exact-team> --timeout-ms 60000
+$pcaom-ds41-team steer --team <exact-team> --message "<instruction>"
+$pcaom-ds41-team inspect --team <exact-team> --pane leader
+$pcaom-ds41-team resume --team <exact-team>
+$pcaom-ds41-team finalize --team <exact-team>
+$pcaom-ds41-team abort --team <exact-team>
+```
+
+The Skill maps each command to `node
+.codex/skills/pcaom-ds41-team/scripts/supervisor-bridge.mjs` with the same verb
+and arguments, from the project root. For example:
+
+```sh
+node .codex/skills/pcaom-ds41-team/scripts/supervisor-bridge.mjs start --spec FEATURE_SPEC.md --workers 3
+```
+
+Read the [Skill contract](project/.codex/skills/pcaom-ds41-team/SKILL.md) for exact
+preflight, ACK records, timeouts and recovery conditions. Official Codex must not
+edit code while DS41 Team is active; the DS41 Leader alone owns execution writes,
+Ultragoal and Team lifecycle. Never activate Larry DSH on the same task tree.
+
+Start uses ACK → GO: the Leader validates context and writes
+`leader-accepted.json`, then ends its turn before a distinct GO permits execution.
+An uncertain `go_submitting` is never automatically replayed. Each run creates
+an isolated `<project>/.omx-pcaom-team-state/<run_id>` and passes its canonical
+path as `OMX_TEAM_STATE_ROOT` to Leader/Workers. The frozen filesystem identity
+must remain unchanged. The Leader publishes exclusive `team-bound.json` from
+actual startup output and matching config/manifest. `<exact-team>` is a Bridge
+run name, not OMX's internal Team name; lifecycle calls use the bound internal
+name and exact isolated root. Missing/changed binding blocks lifecycle actions.
+
+`status` reads exact files passively. `await` uses only
+`omx team api await-event` (1–60000 ms), with no model invocation. Top-level OMX
+status/await and several API summary readers mutate or monitor state in the
+pinned version; they are not passive substitutes. There is no daemon or automatic
+cross-turn wakeup. No background supervisor model tokens are spent by a local
+wait, but ongoing DS41 work still uses model tokens. On the next Human turn use
+status, then resume only if needed: `omx team resume` mutates and monitors.
+
+Steering is `experimental-one-way-file-ack`: an unauthenticated `supervisor`
+sender delivers to `leader-fixed`, with an exact message-ID file ACK. Reverse
+supervisor mailbox is unsupported. Dispatch success proves submission only.
+Failure/timeout degrades to a freshly loaded and read-back-verified named-buffer
+using the same message ID; the Leader must deduplicate and still write the ACK.
+Neither path establishes bidirectional mailbox supervision or promotes status.
+
+The Leader aggregates verification and checkpoints before writing
+`leader-final.json`. Finalize requires every task completed, freezes handoff and
+evidence, then invokes exact non-force shutdown. Success requires removal of the
+bound Team directory and worker panes while preserving the supervisor. A
+`shutdown_uncertain` result is not completion and is not automatically retried.
+Explicit abort uses force with issue confirmation and records abortion, never
+success. After closure, official Codex rereads workspace/diff, reruns Spec checks,
+and reports `PASS` or `CHANGES_REQUIRED`; Leader evidence is not final review.
+
+The earlier design's mailbox round-trip and top-level await proposal is not the
+implemented capability. The narrower pinned behavior above and in the Skill
+governs use; real runtime observations are still required.
 
 ## Catalog and evidence
 

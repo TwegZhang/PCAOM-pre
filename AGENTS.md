@@ -19,6 +19,8 @@ Read the relevant sources explicitly before acting; links alone do not load cont
 | `docs/superpowers/specs/2026-09-25-pcaom-agents-layering-design.md` | PCAOM root versus downstream generated policy and managed-block boundaries |
 | `docs/research/dsh-capability-study.md` | Version-specific DSH capability evidence and limitations |
 | `templates/larry-dsh-headless/README.md` | Concrete Profile installation, pinned runtime, and smoke boundary |
+| `templates/codex-omx-ds41-supervised-team/README.md` | DS41 bundle, installer, Skill/Bridge commands, pinned behavior and unverified capabilities |
+| `docs/superpowers/specs/2026-09-26-pcaom-codex-omx-ds41-supervised-team-design.md` | Approved DS41 topology; implementation limits are recorded in the bundle and Skill |
 | `experience/README.md` | Experience Library schema, evidence grades, and compiler-use rules |
 | `docs/observations/` | Recorded commands, environments, results, failures, and verification gaps |
 
@@ -28,8 +30,9 @@ Report conflicting sources and preserve the narrower verified fact. Distinguish 
 
 - Human owns product scope, architecture, approval of material changes to them, policy exceptions, and business acceptance.
 - Codex handles high-value requirements, architecture work with Human, bounded escalation, and final review against the approved Spec and fresh evidence.
-- DSH + DeepSeek provides cost-first implementation after approval of `FEATURE_SPEC.md`. DSH is the only execution-plane fan-out owner within that execution; delegated experts do not start competing orchestration.
-- OMX is a separate quality-first plane. Do not nest OMX and DSH without evidence of benefit, explicit ownership, cost bounds, and a recovery path.
+- For explicitly selected `larry-dsh-headless`, DSH + DeepSeek implements the approved `FEATURE_SPEC.md`. DSH is the only execution-plane fan-out owner within Larry execution; delegated experts do not start competing orchestration.
+- For explicitly selected `codex-omx-ds41-supervised-team`, DS41 Leader alone owns Ultragoal, Team lifecycle, execution writes through its lanes, and aggregate verification. Official Codex designs, steers, and independently reviews. Official Codex must not edit code while DS41 Team is active or write its Ultragoal ledger.
+- Maintain exactly one execution-plane fan-out owner. Never nest Larry DSH and DS41 Team or activate both for one task tree. Switching requires explicit handoff after the existing runtime reaches a terminal state.
 
 ## Task Classification and Context Routing
 
@@ -37,6 +40,7 @@ Classify the task and load the smallest relevant context before changes:
 
 - Methodology/compiler: compiler contract, relevant design, and affected outputs.
 - DSH Profile/capability: capability study, Profile files, pinned runtime facts, and observations.
+- DS41 target: bundle README, approved target design, installed Skill contract, pinned bridge behavior, and observations; do not activate downstream templates in PCAOM itself.
 - Experience Library: its schema, evidence grades, and the supporting observation.
 - Feature design: usage guide, applicable project instructions, approved architecture/product documents, and relevant code/tests; consult the layering design for generated-policy changes.
 - Dogfood/benchmark: baseline, comparison scope, data authorization, measurements, and observation records.
@@ -52,7 +56,7 @@ Normally reuse the project Profile. Recompile only for material project-level ch
 
 ## Execution Plane Selection
 
-Use Codex directly for small, clear work; OMX for ambiguous or quality-first exploration; DSH for implementation from an approved Spec. Use Team only when work is independent and coordination benefit justifies its cost. A stronger model does not itself justify more orchestration; record the trigger and expected benefit for either escalation.
+Use Codex directly for small, clear work; OMX for ambiguous or quality-first exploration. For approved-Spec implementation, explicitly select Larry DSH or Codex + OMX + DS41, subject to context-transfer authorization. Use Team only when work is independent and coordination benefit justifies its cost. A stronger model does not itself justify more orchestration; record the trigger and expected benefit for either escalation.
 
 ## Escalation and Blockers
 

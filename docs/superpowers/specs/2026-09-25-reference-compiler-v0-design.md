@@ -2,6 +2,8 @@
 
 **状态：** 推荐架构已确认；等待书面 spec review 后进入实施计划。
 
+后续目标扩展：Larry 与 DS41 静态 bundle 已并存；确定性 profiler、IR validator 与 emitter 尚未实现。首个目标集成里程碑是人工 manual semantic fixture，不能以安装器、Skill 或 Bridge 替代完整 Compiler 验收。
+
 ## 目标
 
 实现一个混合式 Reference Compiler：Codex 负责理解项目文档并产生结构化决策，确定性程序负责校验、拒绝非法控制并生成稳定 artifact。
@@ -15,7 +17,7 @@ Spec / Architecture / Repo Facts / Experience Library
                          ↓
              Deterministic Validator + Emitter
                          ↓
-       AGENTS.md / manifest / rationale / Larry Profile
+       AGENTS.md / manifest / rationale / selected target bundle
 ```
 
 V0 用于验证 PCAOM 的核心主张，不追求自动理解所有软件项目，也不嵌入新的 LLM SDK、Agent runtime 或长期服务。
@@ -39,7 +41,7 @@ V0 用于验证 PCAOM 的核心主张，不追求自动理解所有软件项目�
 - Codex 按固定 instruction 将项目文档和 Experience Library 编译为 `project-ir.json`。
 - 对 IR、输入 digest、Experience ID、控制 schema 和不变量做确定性校验。
 - 生成 Contract V0 定义的文档 artifact。
-- 生成 Larry DSH headless Profile 候选模板和 Project Overlay。
+- 根据显式 `execution_target` 生成一个目标 bundle 及项目 Overlay。
 - 对缺失输入、未知 Experience ID、无来源控制、重复 fan-out owner、未核实 runtime 能力和 digest 漂移失败关闭。
 - 保留空 Project Overlay 作为合法结果。
 
@@ -98,7 +100,7 @@ Validator 不判断业务含义，只验证 IR 是否可安全生成：
 3. Experience Library 中每个 ID 恰有一项 decision，结果只能是 `select`、`reject` 或 `not-applicable`；多个 control 可以引用同一条已选 Experience。
 4. 每个 control ID 唯一，字段完整、来源可追溯并声明 owner 和 scope。
 5. 同一 scope 最多一个 fan-out owner。
-6. `runtime-enforced` control 必须提供 `capability_ref`，且只能引用固定 DSH revision 已核实的稳定能力。
+6. `runtime-enforced` control 必须提供 `capability_ref`，且只能引用所选 adapter 固定版本已核实的稳定能力。
 7. experimental 或未 smoke-test 能力不能成为 required control；V0 不提供风险接受旁路。
 8. blocker 未解决时不生成 active Profile，只生成诊断报告。
 9. 输出路径必须位于显式 staging directory，不能覆盖输入 repo。
@@ -127,7 +129,7 @@ Emitter 不加入当前时间等不稳定字段。所有列表按稳定 key 排�
 
 ### 5. Larry DSH Headless Adapter
 
-V0 只实现 headless adapter：
+Larry adapter 的设计边界保持如下（实现状态以 bundle 和 observation 为准）：
 
 - 本机 V0 adapter 固定到已安装的 `dsh-v0.1.5-rc.3@a4c74a91e06b00fe0b0937bde982170c526cc842`；较新的 `0.1.7-rc.2` 只保留为能力研究快照，不混入运行模板；
 - 使用 `dsh-base`、`dsh-headless` 和官方 Codex provider 组合；
@@ -140,6 +142,14 @@ V0 只实现 headless adapter：
 
 ## Project IR V0
 
+### Target adapter 选择与输出边界
+
+Project IR 的 `execution_target` 是必填枚举：`larry-dsh-headless` 或 `codex-omx-ds41-supervised-team`。`target.adapter` 必须与它一致；Validator 拒绝缺失、未知、冲突或多个选择。一次 emit 输出 exactly one target adapter；仓库可保存两套模板，同一执行任务树只能激活一套，不嵌套。
+
+Adapter 接口输入为已校验 IR、版本化 capability snapshot、模板与 digest；输出为目标文件映射、固定 runtime versions、per-capability status map 和 rationale 引用。版本和证据由 adapter 提供，不接受语义前端自行晋升。当前 DS41 map 见 [metadata](../../../templates/codex-omx-ds41-supervised-team/pcaom-target.json)：profile/installer/skill 为 `generated-unverified`，bridge 为 `experimental-unverified`，Ultragoal/Team/worktree/final review 为 `runtime-unverified`。Larry 仅保留 [已记录的 smoke 范围](../../observations/2026-09-25-larry-dsh-runtime-smoke.md)。
+
+上述 emitter 树展示 Larry 分支。DS41 分支位于 `.pcaom/generated/codex-omx-ds41/`，包含 `pcaom-target.json`、`install-manifest.json`、`install.mjs`、`codex/` Profile/catalog 和 `project/.codex/skills/pcaom-ds41-team/` Skill/Bridge；文件细节见 [bundle README](../../../templates/codex-omx-ds41-supervised-team/README.md)。通用 generated policy 仅与所选目标 policy 组合。生成只写 staging，不触及输入仓库、Codex Home 或 tmux；安装为另一次显式操作，按 manifest 写入已授权项目和 Codex Home。模板和人工 fixture 不证明 emit 的确定性或融合行为。
+
 IR 使用 JSON，避免为 Compiler V0 引入 YAML parser 依赖。以下是结构节选，不代表一份可直接通过 Validator 的完整项目 IR：
 
 `spec` 和 `architecture` 路径相对输入 repo 根目录；`repo_facts` 路径相对 `project-ir.json` 所在的 compile work directory。IR 和输出不得记录机器相关的绝对路径。
@@ -148,6 +158,7 @@ IR 使用 JSON，避免为 Compiler V0 引入 YAML parser 依赖。以下是结�
 {
   "ir_version": 0,
   "project": "sample-project",
+  "execution_target": "larry-dsh-headless",
   "inputs": {
     "spec": {"path": "docs/PROJECT.md", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
     "architecture": {"path": "docs/ARCHITECTURE.md", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
@@ -227,7 +238,7 @@ IR 使用 JSON，避免为 Compiler V0 引入 YAML parser 依赖。以下是结�
 
 ## CLI 边界
 
-V0 提供两个确定性命令：
+V0 计划提供两个确定性命令（尚未实现）：
 
 ```text
 pcaom profile --spec PATH --architecture PATH --repo PATH --work-dir PATH

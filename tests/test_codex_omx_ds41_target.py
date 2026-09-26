@@ -13,6 +13,39 @@ BUNDLE = Path(__file__).resolve().parents[1] / "templates" / "codex-omx-ds41-sup
 
 
 class CodexOmxDs41TargetTests(unittest.TestCase):
+    def test_repository_docs_route_both_targets_without_promoting_runtime(self):
+        root = BUNDLE.parents[1]
+        requirements = {
+            "README.md": ("target bundles", "codex-omx-ds41-supervised-team",
+                          "deterministic reference compiler/emitter 尚未实现", "generated-unverified"),
+            "AGENTS.md": ("explicitly selected", "larry-dsh-headless",
+                          "codex-omx-ds41-supervised-team", "exactly one execution-plane fan-out owner",
+                          "Official Codex must not edit code while DS41 Team is active", "Never nest"),
+            "docs/methodology/compiler-contract-v0.md": ("execution_target", "exactly one target adapter",
+                          "per-capability", "installation", "codex-omx-ds41-supervised-team"),
+            "docs/methodology/codex-omx-dsh-usage-guide.md": ("Official Codex supervisor", "DS41 Leader",
+                          "ACK → GO", "await-event", "team-bound.json", "named-buffer",
+                          "no daemon", "$pcaom-ds41-team start --spec FEATURE_SPEC.md --workers 3",
+                          "dsh --profile larry-dsh-headless", "PASS", "CHANGES_REQUIRED"),
+            "docs/superpowers/specs/2026-09-25-reference-compiler-v0-design.md": (
+                          "execution_target", "manual semantic fixture", "per-capability",
+                          "codex-omx-ds41-supervised-team", "exactly one target adapter"),
+            "experience/omx.md": ("OMX-006", "mechanism-inference", "experimental-one-way-file-ack",
+                          "await-event", "team-bound.json"),
+            "templates/codex-omx-ds41-supervised-team/README.md": (
+                          "install.mjs", "ACK → GO", ".omx-pcaom-team-state/<run_id>",
+                          "team-bound.json", "experimental-one-way-file-ack", "await-event",
+                          "no daemon", "runtime-unverified", "leader-final.json"),
+        }
+        for path, markers in requirements.items():
+            text = (root / path).read_text(encoding="utf-8")
+            for marker in markers:
+                with self.subTest(path=path, marker=marker):
+                    self.assertIn(marker, text)
+        readme = self.read_required("README.md")
+        self.assertNotIn("planned installer commands", readme)
+        self.assertNotIn("delivered by subsequent implementation tasks", readme)
+
     def read_required(self, name):
         path = BUNDLE / name
         self.assertTrue(path.is_file(), f"missing bundle artifact: {path}")
