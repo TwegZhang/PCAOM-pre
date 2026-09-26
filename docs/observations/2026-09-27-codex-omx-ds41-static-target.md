@@ -6,6 +6,8 @@ Artifact status: generated-unverified; static contract tests passed; real profil
 
 - Date: 2026-09-27, Asia/Shanghai (UTC+08:00); checks ran approximately 03:55–04:00 CST.
 - Source commit: `6cd850cbc98f6927c9525aeebfa4bca1f60061eb`.
+  This identifies the implementation tested below; the permanent verification
+  harness was added in a later observation follow-up on the same date.
 - Workspace: `/Volumes/data/githubCode/PCAOM-pre/.worktrees/codex-omx-ds41-supervised-team`.
 - OS: macOS 26.5, build 25F71; Darwin arm64.
 - Versions from `python3 --version`, `python3.12 --version`, `node --version`,
@@ -27,8 +29,8 @@ of real execution.
 
 ## Commands and results
 
-All commands below ran from the workspace above unless their absolute paths
-identify disposable roots. No implementation or target status files changed.
+All commands below ran from the workspace above. No installer/bridge implementation
+or target status files changed; the follow-up added only the verification harness.
 
 | Command | Result |
 | --- | --- |
@@ -82,46 +84,62 @@ edited to conceal these expected matches.
 
 ### Isolated installer round trip
 
-`mktemp -d /private/tmp/pcaom-ds41-static.XXXXXX` created
-`/private/tmp/pcaom-ds41-static.Qxb0iU`. A temporary Node assertion harness,
-executed with `node /private/tmp/pcaom-ds41-static.Qxb0iU/check.mjs` (exit 0),
-copied the complete production bundle, including the actual bridge, into its
-`bundle` child. Explicit destination children were `project-verified` and
-`codex home verified`; each had an unrelated sentinel containing `preserve me`.
-Neither destination was the actual project or real Codex Home.
-
-The harness invoked these exact command arguments through `execFileSync`:
+The permanent [verification script](../../scripts/verify-ds41-installer-roundtrip.mjs)
+reproduces the isolated exercise from any working directory by resolving the
+production bundle relative to its own location. Run from the repository root:
 
 ```sh
-node /private/tmp/pcaom-ds41-static.Qxb0iU/bundle/install.mjs install --project /private/tmp/pcaom-ds41-static.Qxb0iU/project-verified --codex-home '/private/tmp/pcaom-ds41-static.Qxb0iU/codex home verified' --dry-run
-node /private/tmp/pcaom-ds41-static.Qxb0iU/bundle/install.mjs install --project /private/tmp/pcaom-ds41-static.Qxb0iU/project-verified --codex-home '/private/tmp/pcaom-ds41-static.Qxb0iU/codex home verified'
-node /private/tmp/pcaom-ds41-static.Qxb0iU/bundle/install.mjs install --project /private/tmp/pcaom-ds41-static.Qxb0iU/project-verified --codex-home '/private/tmp/pcaom-ds41-static.Qxb0iU/codex home verified'
-node /private/tmp/pcaom-ds41-static.Qxb0iU/bundle/install.mjs uninstall --project /private/tmp/pcaom-ds41-static.Qxb0iU/project-verified --codex-home '/private/tmp/pcaom-ds41-static.Qxb0iU/codex home verified'
+node scripts/verify-ds41-installer-roundtrip.mjs
 ```
 
-All four commands exited 0 with `ok: true` and 4 operations. Assertions established:
+The script requires Node.js and Python 3.12, uses only standard libraries, and
+creates an exclusive `mkdtemp` directory beneath the OS temporary directory.
+It copies the complete production bundle, including the actual bridge, and
+creates explicit `project root` and `codex home` children, each with an unrelated
+sentinel. It invokes the Node installer with argument arrays through `execFileSync`
+(no shell) for dry-run, install, reinstall, and uninstall. Each result must be one
+JSON line with `ok: true`, exactly 4 operations, and the expected destinations.
+
+Tree and SHA-256 assertions establish:
 
 - Dry-run preserved destination directory entries and file bytes, and bundle bytes.
 - Install created exactly 4 managed files and 2 receipts alongside the 2 sentinels.
 - Identical reinstall preserved all destination file and receipt bytes.
-- Python 3.12 `tomllib.loads` and `json.loads` parsed the installed profile/catalog;
-  the model was `deepseek-flash` and catalog path was exactly
-  `/private/tmp/pcaom-ds41-static.Qxb0iU/codex home verified/model-catalogs/pcaom-deepseek-models.json`.
+- Node parsed installed JSON receipts/catalog; Python 3.12 `tomllib.loads` parsed
+  the installed profile, asserting model `deepseek-flash` and the exact absolute
+  catalog path within that run's disposable Codex Home.
 - Uninstall removed the 4 managed files and 2 receipts and preserved both
-  unrelated sentinels byte-for-byte. The copied bundle remained unchanged.
+  unrelated sentinels byte-for-byte. Both original and copied bundles remained unchanged.
 
-An earlier run with sibling `project` and `codex home` destinations passed the
-same file-byte assertions; the final run additionally checked dry-run directory
-entries. The exact disposable directory and harness were removed after checks.
-No temporary harness or fixture is part of this commit.
+Cleanup runs in `finally`, only after validating the exact temporary parent's
+canonical path, basename prefix and directory filesystem identity. It removes
+only that run's disposable directory. Failure produces JSON stderr and a nonzero
+exit without printing subprocess output or environment values. No API key is used.
+
+Fresh follow-up verification (2026-09-27, approximately 04:06–04:08 CST):
+`node --check scripts/verify-ds41-installer-roundtrip.mjs`
+exited 0. The round-trip command ran twice and both executions exited 0 with the
+same summary (no persistent temporary paths):
+
+```json
+{"ok":true,"installer_invocations":4,"managed_files":4,"receipts":2,"sentinels_preserved":2,"dry_run_unchanged":true,"reinstall_identical":true,"installed_json_toml":true,"bundle_unchanged":true,"exact_uninstall":true,"temporary_removed":true}
+```
+
+`PYTHONDONTWRITEBYTECODE=1 python3.12 -m unittest tests.test_codex_omx_ds41_installer -v`
+also passed all 34 installer tests in 5.248 seconds. A missing-Python failure
+exercise launched the script through Node `spawnSync` with `PATH=/nonexistent`
+and an isolated `TMPDIR`; it returned exit 1, JSON stderr with phase
+`installed-profile`, empty stdout, and left that temporary parent empty.
+Observation links and `git diff --check` were
+checked again for this follow-up.
 
 ## Evidence limits and next gate
 
 Established: static contracts, Node syntax, JSON/profile parsing, pinned catalog
 loader compatibility, isolated installer ownership/idempotence behavior, and
 local fake-adapter bridge regressions. A relative-link existence check resolves
-both bundle README links and all 3 observation links. No build/typecheck command
-is applicable to this documentation-only change and plain JavaScript bundle;
+both bundle README links and all 4 observation links. No build/typecheck command
+is applicable to this observation/harness change and plain JavaScript bundle;
 Node syntax checks and the Python suites are the executable checks used here.
 
 Not established: actual model/provider behavior, real profile startup/banner,
