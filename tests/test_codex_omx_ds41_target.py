@@ -119,7 +119,14 @@ env_key_instructions = "Set DEEPSEEK_API_KEY in the trusted launcher environment
 
     def test_skill_defines_supervisor_commands_and_ownership_contract(self):
         text = self.read_required("project/.codex/skills/pcaom-ds41-team/SKILL.md")
-        self.assertTrue(text.startswith("---\nname: pcaom-ds41-team\n"))
+        lines = text.splitlines()
+        self.assertEqual(lines[0], "---")
+        self.assertIn("---", lines[1:], "missing closing frontmatter delimiter")
+        frontmatter = lines[1:lines.index("---", 1)]
+        names = [value.strip() for line in frontmatter
+                 for key, separator, value in [line.partition(":")]
+                 if separator and key.strip() == "name"]
+        self.assertEqual(names, ["pcaom-ds41-team"])
         commands = {
             "start": "--spec FEATURE_SPEC.md --workers 3",
             "status": "--team <exact-team>",
