@@ -387,7 +387,7 @@ class CodexOmxDs41InstallerTests(unittest.TestCase):
 
     def test_uninstall_cleanup_fault_restores_files(self):
         self.install_ok()
-        self.inject('      rmdirSync(path);', '      rmdirSync(path); throw new Error("cleanup fault");')
+        self.inject('    rmdirSync(path);', '    rmdirSync(path); throw new Error("cleanup fault");')
         self.fails_unchanged('uninstall', *self.args()[1:])
 
     def test_directory_identity_change_before_mutation_fails(self):
@@ -453,6 +453,59 @@ class CodexOmxDs41InstallerTests(unittest.TestCase):
         self.assertEqual(target.read_bytes(), (self.bundle / 'codex/deepseek-models.json').read_bytes())
         self.assertEqual(diagnostic['error'], 'rollback-failed')
         self.assertIn(str(target), diagnostic['rollbackConflicts'])
+
+    def test_rollback_cleanup_preserves_external_tree_after_ancestor_substitution(self):
+        external = self.root / 'external'
+        external_skill = external / 'skills/pcaom-ds41-team'
+        external_skill.mkdir(parents=True)
+        moved = self.project / '.codex-moved'
+        self.inject('statSync, unlinkSync,', 'statSync, symlinkSync, unlinkSync,')
+        self.inject('written.push(action.destination);',
+                    'written.push(action.destination); if (action.destination.endsWith("SKILL.md")) { '
+                    'renameSync(' + json.dumps(str(self.project / '.codex')) + ', ' + json.dumps(str(moved)) + '); '
+                    'symlinkSync(' + json.dumps(str(external)) + ', ' + json.dumps(str(self.project / '.codex')) + '); }')
+        result = self.run_installer(*self.args())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(external_skill.is_dir(), 'external empty directories must survive cleanup')
+        self.assertTrue((moved / 'skills/pcaom-ds41-team/SKILL.md').is_file())
+        self.assertTrue((self.project / '.codex').is_symlink())
+        diagnostic = json.loads(result.stderr)
+        self.assertEqual(diagnostic['error'], 'rollback-failed')
+        self.assertIn(str(self.project / '.codex/skills/pcaom-ds41-team'), diagnostic['rollbackProblems'])
+
+    def test_uninstall_cleanup_preserves_external_tree_after_ancestor_substitution(self):
+        self.install_ok()
+        external = self.root / 'external'
+        external_skill = external / 'skills/pcaom-ds41-team'
+        (external_skill / 'scripts').mkdir(parents=True)
+        moved = self.project / '.codex-moved'
+        self.inject('statSync, unlinkSync,', 'statSync, symlinkSync, unlinkSync,')
+        boundary = 'try { removeEmptyParents(action.root, action.destination, identities); }'
+        self.inject(boundary,
+                    'if (action.destination.endsWith("SKILL.md")) { '
+                    'renameSync(' + json.dumps(str(self.project / '.codex')) + ', ' + json.dumps(str(moved)) + '); '
+                    'symlinkSync(' + json.dumps(str(external)) + ', ' + json.dumps(str(self.project / '.codex')) + '); } '
+                    + boundary)
+        result = self.run_installer('uninstall', *self.args()[1:])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue((external_skill / 'scripts').is_dir())
+        self.assertTrue((moved / 'skills/pcaom-ds41-team/scripts').is_dir())
+        diagnostic = json.loads(result.stderr)
+        self.assertIn(str(self.project / '.codex/skills/pcaom-ds41-team'), diagnostic['rollbackConflicts'])
+
+    def test_rollback_cleanup_preserves_replaced_directory_identity(self):
+        skill = self.project / '.codex/skills/pcaom-ds41-team'
+        moved = skill.with_name('moved-skill')
+        self.inject('written.push(action.destination);',
+                    'written.push(action.destination); if (action.destination.endsWith("SKILL.md")) { '
+                    'renameSync(' + json.dumps(str(skill)) + ', ' + json.dumps(str(moved)) + '); '
+                    'mkdirSync(' + json.dumps(str(skill)) + '); }')
+        result = self.run_installer(*self.args())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(skill.is_dir())
+        self.assertTrue((moved / 'SKILL.md').is_file())
+        diagnostic = json.loads(result.stderr)
+        self.assertIn(str(skill), diagnostic['rollbackConflicts'])
 
 
 if __name__ == "__main__":

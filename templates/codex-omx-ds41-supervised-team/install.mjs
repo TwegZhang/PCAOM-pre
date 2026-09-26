@@ -199,7 +199,7 @@ function loadReceipt(receipts, options, files) {
 function transaction(actions, verify) {
   const identities = new Map();
   const snapshots = new Map();
-  const createdDirectories = new Set();
+  const createdDirectories = new Map();
   const identity = (path) => {
     try {
       const stats = lstatSync(path);
@@ -222,6 +222,21 @@ function transaction(actions, verify) {
       snapshots.get(action.destination)), `Content changed: ${action.destination}`);
   };
   const touched = [];
+  const ensureParents = (action) => {
+    const paths = [];
+    for (let path = dirname(action.destination); path !== action.root; path = dirname(path)) paths.unshift(path);
+    requireValid(identity(action.root) === identities.get(action.root), `Identity changed: ${action.root}`);
+    for (const path of paths) {
+      const expected = identities.get(path);
+      requireValid(identity(path) === expected, `Identity changed: ${path}`);
+      if (expected !== null) continue;
+      // Create one level at a time so ownership is captured for every directory
+      // before any later artifact write or fault can change the ancestor chain.
+      mkdirSync(path);
+      identities.set(path, identity(path));
+      createdDirectories.set(path, { root: action.root, identities: new Map(identities) });
+    }
+  };
   try {
     revalidate();
     for (const action of actions) {
@@ -231,11 +246,11 @@ function transaction(actions, verify) {
       if (action.action !== "delete" && sameBytes(before, action.bytes)) continue;
       const mutation = { ...action, before, resultIdentity: null };
       touched.push(mutation);
-      for (let path = dirname(action.destination); path !== action.root; path = dirname(path)) {
-        if (identity(path) === null) createdDirectories.add(path);
-      }
       if (action.action === "delete") unlinkSync(action.destination);
-      else atomicWrite(action.destination, action.bytes, mutation);
+      else {
+        ensureParents(action);
+        atomicWrite(action.destination, action.bytes, mutation);
+      }
       written.push(action.destination);
       snapshots.set(action.destination, action.action === "delete" ? null : action.bytes);
       identities.set(action.destination, mutation.resultIdentity);
@@ -249,15 +264,20 @@ function transaction(actions, verify) {
     if (actions.every((action) => action.action === "delete")) {
       revalidate();
       for (const action of actions) {
-        try { removeEmptyParents(action.root, action.destination); }
+        try { removeEmptyParents(action.root, action.destination, identities); }
         finally {
           for (let path = dirname(action.destination); path !== action.root; path = dirname(path)) {
-            if (identity(path) === null) identities.set(path, null);
+            try { if (identity(path) === null) identities.set(path, null); }
+            catch { /* Preserve the original cleanup conflict diagnostic. */ }
           }
         }
       }
     }
   } catch (error) {
+    if (error.cleanupConflict) {
+      rollbackProblems.push(error.cleanupConflict);
+      rollbackConflicts.push(error.cleanupConflict);
+    }
     for (const action of touched.reverse()) {
       try {
         validateDestination(action.root, action.destination);
@@ -285,9 +305,10 @@ function transaction(actions, verify) {
         requireValid(sameBytes(existingBytes(action.root, action.destination), action.before), "Rollback verification failed");
       } catch { rollbackProblems.push(action.destination); }
     }
-    for (const path of [...createdDirectories].sort((a, b) => b.length - a.length)) {
-      try { rmdirSync(path); } catch (cleanupError) {
-        if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes(cleanupError.code)) rollbackProblems.push(path);
+    for (const [path, record] of [...createdDirectories].sort(([a], [b]) => b.length - a.length)) {
+      try { removeOwnedDirectory(record.root, path, record.identities); } catch {
+        rollbackProblems.push(path);
+        rollbackConflicts.push(path);
       }
     }
     throw error;
@@ -315,19 +336,42 @@ function emit(stream, data) {
     key && typeof value === "string" ? value.split(key).join("[REDACTED]") : value)}\n`);
 }
 
-function removeEmptyParents(root, destination) {
+function removeOwnedDirectory(root, path, identities) {
+  requireValid(withinRoot(root, path), `Cleanup path escapes root: ${path}`);
+  const chain = [root];
+  let current = root;
+  for (const part of relative(root, path).split(sep)) {
+    current = resolve(current, part);
+    chain.push(current);
+  }
+  for (const component of chain) {
+    let stats;
+    try { stats = lstatSync(component); }
+    catch (error) {
+      if (error.code === "ENOENT" && component !== root) return false;
+      throw error;
+    }
+    if (stats.isSymbolicLink() || !stats.isDirectory() ||
+      `${stats.dev}:${stats.ino}` !== identities.get(component)) {
+      throw Object.assign(new Error(`Cleanup identity changed: ${path}`), { cleanupConflict: path });
+    }
+  }
+  try {
+    rmdirSync(path);
+  } catch (error) {
+    if (["ENOENT", "ENOTEMPTY", "EEXIST"].includes(error.code)) return false;
+    throw error;
+  }
+  return true;
+}
+
+function removeEmptyParents(root, destination, identities) {
   const skillRoot = resolve(root, ".codex/skills/pcaom-ds41-team");
   if (!withinRoot(skillRoot, destination)) return;
   // Only this bundle's unique Skill subtree is eligible for cleanup. Shared
   // Skill, catalog, and receipt parents belong to the host, even when empty.
   for (let path = dirname(destination); path !== dirname(skillRoot); path = dirname(path)) {
-    try {
-      requireValid(!lstatSync(path).isSymbolicLink(), "Cleanup path contains symlink");
-      rmdirSync(path);
-    } catch (error) {
-      if (["ENOENT", "ENOTEMPTY", "EEXIST"].includes(error.code)) break;
-      throw error;
-    }
+    if (!removeOwnedDirectory(root, path, identities)) break;
   }
 }
 
