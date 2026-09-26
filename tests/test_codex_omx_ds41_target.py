@@ -152,6 +152,10 @@ env_key_instructions = "Set DEEPSEEK_API_KEY in the trusted launcher environment
             "accepted-awaiting-go", "leader-accepted.json", "END TURN",
             "go_submitting", "go_submitted", "Never automatically replay GO",
             "Task 7", "--command-timeout-ms",
+            "await-event", "experimental-one-way-file-ack",
+            "unauthenticated", "reverse supervisor mailbox is unsupported",
+            "resume mutates and monitors", "leader-final.json",
+            "all tasks must be `completed`", "--force --confirm-issues",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, text)

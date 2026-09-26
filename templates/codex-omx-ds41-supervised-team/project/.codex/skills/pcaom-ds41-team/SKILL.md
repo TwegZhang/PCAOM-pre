@@ -115,41 +115,68 @@ diagnostics. `--startup-timeout-ms` bounds the ACK/GO startup sequence.
 
 ## Observe, wait, and steer
 
-`status` and `inspect` are read-only: read Team summary/tasks and capture the
-exact Leader or requested Worker pane. They must not deliver instructions,
-change tasks, or mutate lifecycle state.
+`status` is passive: directly read the exact Team config, manifest, phase,
+tasks, worker records and wakeable event log. Do not call top-level OMX status
+or await: both invoke monitoring and can assign work or integrate worktrees.
+OMX API read-config, read-manifest, list-tasks and get-summary also have
+recovery/migration/snapshot writes and are not passive readers. `inspect`
+captures only a pane already owned by the run manifest. Neither command
+delivers instructions or mutates lifecycle state. Absent Team state after GO
+is reported as `awaiting-team`, not verified startup. Reads are bounded to
+1 MiB per file and 1000 tasks; oversized evidence fails closed.
 
-`await` is a bounded local event wait through OMX and produces no model call.
-Only `QUESTION`, `BLOCKED`, `FAILED`, story completion, Team completion, or a
-Human query wakes official Codex. Heartbeats, unchanged timeouts, and duplicate
-progress do not trigger model summaries. There is no daemon: no bridge watcher
+`await` invokes only `omx team api await-event` with `wakeable_only:true`,
+an explicit/latest wakeable cursor, and a 1–60000 ms timeout. It invokes zero
+Codex processes; a returned Team event can reflect ongoing model work.
+Pinned OMX wakeable events include task completion/failure, worker state,
+messages, integration conflicts and stale signals. A timeout is a successful
+local wait result, not task completion. There is no daemon: no bridge watcher
 remains after the current official Codex turn. Continue later through `resume`
 or a new Human message; do not promise unattended cross-turn wakeups.
 
-`steer` sends a bounded instruction with a unique `message_id` and waits for
-`ACK:<message_id>`. A successful send is not an ACK. Deduplicate retries by that
-identity. External-supervisor mailbox support is experimental: first verify a
-round trip from `supervisor` to `leader-fixed`, the Leader's matching ACK, and
-supervisor receipt/delivery marking with duplicate-message handling.
+`steer` generates a unique `message_id` and sends the exact instruction through
+OMX send-message from `supervisor` to `leader-fixed`. The sender label is
+unauthenticated; reverse supervisor mailbox is unsupported in OMX 0.21.6.
+Capability stays `experimental-one-way-file-ack`, never mailbox round-trip
+verified. `ACK:<message_id>` denotes an exact file ACK under the run directory:
+the Leader atomically creates the specified JSON containing team, message_id,
+leader_pane_id and context_digest. A successful API envelope and nested
+dispatch.ok establish transport submission only. `--ack-timeout-ms` bounds
+each ACK wait to 1–30000 ms (default 5000).
 
-If mailbox delivery or ACK verification fails, explicitly report degraded mode
-and use verified named-buffer steering with manual pane observation. Apply the
-same read-back, exact-pane, bracketed-paste, and acceptance checks as the initial
-handoff. Do not silently duplicate a possibly delivered instruction or claim
-mailbox supervision is verified from a fallback's success.
+If API/schema/dispatch delivery fails or the ACK times out, persist the degraded
+reason and use a fresh verified named-buffer with the same message ID and ACK
+path. The Leader must deduplicate that ID because initial delivery may already
+have happened. Recheck generation, exact pane/PID/owner and buffer bytes before
+clear/bracket-paste/Enter; clean only the exact named buffer. A mismatched or
+symlink ACK fails closed. Fallback still requires the matching file ACK and
+does not establish mailbox supervision.
 
 ## Resume, finalize, and abort
 
-`resume` reconstructs supervision from existing OMX config/manifest and validates
-the exact Team root, internal name, session, Leader pane, runtime identity, and
-workspace. Revalidate live ownership before mutation. Missing or conflicting
-identity is a blocker; do not create a replacement Team to conceal it.
+All lifecycle operations freeze/revalidate the exact internal Team name, project
+state root, creation time, Leader cwd/pane/PID, tmux generation/session/window,
+owner token and configured worker panes/worktrees. Symlinks, aliases and pending
+membership transaction journals fail closed. Environment root overrides require
+an already-persisted matching canonical root. Status may inspect `go_submitting`;
+await/steer/resume/finalize/abort require `go_submitted` or `resumed`. Never replay
+uncertain GO. Status cannot persist a new identity; mutating commands freeze the
+first verified Team identity in the run manifest and reject later changes.
 
-`finalize` requires all tasks to be terminal and successful, plus fresh evidence
-that DS41 performed aggregate verification, checkpointing, and its owned shutdown
-procedure. Failed, pending, or in-progress tasks block normal finalization.
-Preserve handoff and verification evidence; close only proven Team-owned panes
-through OMX's lifecycle contract. Do not treat the Leader's final prose as proof.
+`resume` invokes exact `omx team resume <internal-name>` after preflight and
+checks its success prefix and fresh Team/generation evidence. OMX resume mutates and monitors;
+it may integrate work and is not a passive supervision check. It does not prove
+dead worker resurrection. Missing identity blocks rather than creating a Team.
+
+For `finalize`, all tasks must be `completed`; pending, blocked, in_progress,
+failed and unknown states fail closed. The Leader first checkpoints its work and
+creates regular `leader-final.json` in the run directory with exact team and
+context_digest, a nonempty verification array of {command, result:"pass",
+exit_code:0}, plus absolute project handoff_path and its SHA256 handoff_digest.
+The bridge freezes final-handoff.md and final-evidence.json before invoking
+`omx team shutdown <internal-name>` without force. Shutdown failure preserves
+evidence/diagnostics without claiming completion. Leader evidence is not
+independent official review, which remains pending after shutdown.
 
 After the execution lifecycle is closed, official Codex independently re-reads
 the workspace and diff, reruns the Spec's exact verification commands, and
@@ -158,11 +185,12 @@ reviews the result against acceptance criteria. Report `PASS`,
 to the existing DS41 Leader or an explicitly scoped repair story without
 recursive or competing Team orchestration.
 
-`abort` acts only on an explicitly requested exact scope through OMX's supported
-cancellation/shutdown contract. Freeze and revalidate the same Team root, name,
-session, Leader pane, and runtime identity before acting. Abort does not imply
-success and must preserve diagnostics; do not broadly kill tmux sessions, remove
-unrelated state, or infer ownership from names alone.
+Explicit `abort` authorizes destructive exact `omx team shutdown <internal-name>
+--force --confirm-issues` after the same identity gate. Missing/changed Team
+state refuses shutdown. Abort records aborted evidence, never success. Neither
+finalize nor abort directly kills the supervisor window or an entire session;
+the supervisor must remain live. No invented OMX steer/finalize/abort/cancel
+verbs are passed through to the CLI.
 
 ## Blockers and evidence
 

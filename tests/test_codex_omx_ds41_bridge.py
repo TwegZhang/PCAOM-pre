@@ -45,7 +45,31 @@ if a in [['--version'], ['-V']]:
     else:
         print('wrong' if scenario == p+'-version' else {'codex':'codex-cli 0.156.1','omx':'oh-my-codex v0.21.6\nNode.js v22.22.2','tmux':'tmux 3.7b'}[p])
 elif p == 'omx':
-    sys.exit('Unexpected OMX runtime command during preflight')
+    if a[:3] == ['team','api','await-event']:
+        request=json.loads(a[4])
+        data={'status':'timeout','cursor':request['after_event_id'],'event':None}
+        if scenario == 'event': data={'status':'event','cursor':'e3','event':{'event_id':'e3','team':'demo','type':'task_completed','worker':'worker-1','created_at':'now'}}
+        print(json.dumps({'schema_version':'1.0','timestamp':'2026-09-27T00:00:00Z','command':'wrong' if scenario == 'bad-envelope' else 'omx team api await-event','ok':True,'operation':'await-event','data':data}))
+    elif a[:3] == ['team','api','send-message']:
+        if scenario == 'api-error': sys.exit('unsupported sender')
+        request=json.loads(a[4])
+        import re
+        body=request['body']
+        ack_path=json.loads(re.search(r'^Acknowledgment path: (.+)$',body,re.M)[1])
+        ack=json.loads(re.search(r'^Acknowledgment JSON: (.+)$',body,re.M)[1])
+        if scenario not in ['dispatch-false','ack-timeout','schema-error']:
+            if scenario == 'steer-bad-ack': ack['message_id']='wrong'
+            pathlib.Path(ack_path).write_text(json.dumps(ack))
+        print(json.dumps({'schema_version':'bad' if scenario == 'schema-error' else '1.0','timestamp':'2026-09-27T00:00:00Z','command':'omx team api send-message','ok':True,'operation':'send-message','data':{'message':{'message_id':'omx-id'},'dispatch':{'ok':scenario != 'dispatch-false'}}}))
+    elif a[:2] == ['team','resume']:
+        print('wrong' if scenario == 'bad-prefix' else 'Team started: '+a[2])
+    elif a[:2] == ['team','shutdown']:
+        if scenario == 'shutdown-error': sys.exit('shutdown gate failed')
+        print('wrong' if scenario == 'bad-prefix' else 'Team shutdown complete: '+a[2])
+    else: sys.exit('Unexpected OMX runtime command during preflight')
+elif a[0] == 'display-message':
+    pane=a[a.index('-t')+1]
+    print('$1\t@2\t'+pane+'\t'+('999' if scenario == 'pane-pid-changed' else ('222' if pane == '%2' else '333'))+'\towner-demo\t1700000000\tfixture:2')
 elif a[0] == 'list-panes':
     generation = '\t/tmp/fake-tmux.sock\t'+('999' if scenario == 'restarted' or (scenario == 'restart-start' and (root/'created').exists()) else '123')+'\t1700000000'
     print('$1\t@1\t%1\tsupervisor\t0\tcodex'+generation)
@@ -84,6 +108,12 @@ elif a[0] == 'show-buffer':
 elif a[0] == 'send-keys' and a[-1] == 'Enter':
     (root/'entered').touch()
     text=(root/'buffer').read_text()
+    if text.startswith('Steering message:'):
+        import re
+        ack_path=json.loads(re.search(r'^Acknowledgment path: (.+)$',text,re.M)[1])
+        ack=json.loads(re.search(r'^Acknowledgment JSON: (.+)$',text,re.M)[1])
+        if scenario != 'ack-timeout': pathlib.Path(ack_path).write_text(json.dumps(ack))
+        sys.exit(0)
     if text.startswith('GO JSON: '):
         (root/'go').write_text(text)
         if scenario == 'go-enter': sys.exit('GO Enter failure')
@@ -182,6 +212,229 @@ class BridgeTests(unittest.TestCase):
     def calls(self, command=None):
         calls = [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
         return [c for c in calls if command is None or c['args'][0] == command]
+
+    def team_fixture(self):
+        self.assertEqual(self.start()[0].returncode, 0)
+        self.run_dir=self.project/'.omx/pcaom-supervisor/demo'
+        self.team_dir=self.project/'.omx/state/team/demo'
+        self.team_dir.mkdir(parents=True)
+        (self.root/'workers').touch()
+        worker={'name':'worker-1','index':1,'role':'executor','assigned_tasks':['1'],'pid':333,'pane_id':'%3','working_dir':str(self.project),'worktree_path':str(self.project),'team_state_root':str(self.project/'.omx/state')}
+        self.config={'name':'demo','task':'Synthetic','agent_type':'executor','worker_launch_mode':'interactive','lifecycle_profile':'default','worker_count':1,'max_workers':20,'workers':[worker],'created_at':'2026-09-27T00:00:00Z','tmux_session':'fixture:2','tmux_session_id':'$1','tmux_session_created':'1700000000','next_task_id':2,'leader_cwd':str(self.project),'team_state_root':str(self.project/'.omx/state'),'leader_pane_id':'%2','leader_pane_pid':222,'hud_pane_id':None,'hud_pane_pid':None,'tmux_pane_owner_id':'owner-demo','resize_hook_name':None,'resize_hook_target':None,'config_generation':1}
+        self.write_team()
+        (self.team_dir/'phase.json').write_text(json.dumps({'current_phase':'team-exec','iteration':1}))
+        (self.team_dir/'tasks').mkdir()
+        self.task={'id':'1','subject':'fixture','description':'synthetic','status':'completed','created_at':'now','version':1}
+        (self.team_dir/'tasks/task-1.json').write_text(json.dumps(self.task))
+        worker_dir=self.team_dir/'workers/worker-1'
+        worker_dir.mkdir(parents=True)
+        for name,value in [('identity',worker),('status',{'state':'done'}),('heartbeat',{'pid':333,'alive':True})]:
+            (worker_dir/(name+'.json')).write_text(json.dumps(value))
+        (self.team_dir/'events').mkdir()
+        events=[{'event_id':'e1','team':'demo','type':'task_completed','worker':'worker-1','created_at':'now'}, {'event_id':'e2','team':'demo','type':'worker_diff_activity','worker':'worker-1','created_at':'now'}]
+        (self.team_dir/'events/events.ndjson').write_text('\n'.join(json.dumps(event) for event in events)+'\n')
+        self.log.write_text('')
+
+    def write_team(self):
+        (self.team_dir/'config.json').write_text(json.dumps(self.config))
+        (self.team_dir/'manifest.v2.json').write_text(json.dumps(dict(self.config,schema_version=2,leader={'session_id':'session','worker_id':'leader-fixed','role':'leader'})))
+
+    def runtime_calls(self):
+        return [c['args'] for c in self.calls() if c['program']=='omx']
+
+    def final_fixture(self):
+        run=json.loads((self.run_dir/'run.json').read_text())
+        handoff=self.project/'handoff.md'
+        handoff.write_text('Synthetic final handoff')
+        proof={'team':'demo','context_digest':run['context_digest'],'verification':[{'command':'python3 -m unittest','result':'pass','exit_code':0}], 'handoff_path':str(handoff),'handoff_digest':hashlib.sha256(handoff.read_bytes()).hexdigest()}
+        (self.run_dir/'leader-final.json').write_text(json.dumps(proof))
+
+    def test_status_returns_raw_team_summary_and_manifest_identity(self):
+        self.team_fixture()
+        before=(self.run_dir/'run.json').read_bytes()
+        result,data=self.invoke('status','--team','demo')
+        self.assertEqual(result.returncode,0,data)
+        evidence=data['evidence']
+        self.assertEqual(evidence['mode'],'passive')
+        self.assertEqual(evidence['team_identity']['config'],self.config)
+        self.assertEqual(evidence['tasks'],[self.task])
+        self.assertEqual(evidence['latest_wakeable_event']['event_id'],'e1')
+        self.assertEqual(before,(self.run_dir/'run.json').read_bytes())
+        self.assertEqual(self.runtime_calls(),[])
+        self.assertTrue(all(c['program']=='git' or c['program']=='tmux' and c['args'][0] in ['list-panes','display-message'] for c in self.calls()))
+
+    def test_status_awaiting_team_and_uncertain_go(self):
+        self.assertEqual(self.start()[0].returncode,0)
+        self.log.write_text('')
+        result,data=self.invoke('status','--team','demo')
+        self.assertEqual(result.returncode,0,data)
+        self.assertEqual(data['evidence']['status'],'awaiting-team')
+        self.assertEqual(self.runtime_calls(),[])
+
+    def test_await_timeout_does_not_launch_codex_or_send_tmux_keys(self):
+        self.team_fixture()
+        for extra,cursor in [((),'e1'),(('--after-event-id','explicit'),'explicit')]:
+            result,data=self.invoke('await','--team','demo','--timeout-ms','100',*extra)
+            self.assertEqual(result.returncode,0,data)
+            self.assertEqual(data['evidence']['status'],'timeout')
+            self.assertEqual(data['evidence']['cursor'],cursor)
+            args=self.runtime_calls()[-1]
+            self.assertEqual(args[:4],['team','api','await-event','--input'])
+            self.assertEqual(json.loads(args[4]),{'team_name':'demo','after_event_id':cursor,'timeout_ms':100,'poll_ms':100,'wakeable_only':True})
+            self.assertEqual(args[5:],['--json'])
+        self.assertEqual(self.calls('send-keys'),[])
+        self.assertFalse(any(c['program']=='codex' for c in self.calls()))
+
+    def test_steer_sends_message_id_and_requires_matching_ack(self):
+        self.team_fixture()
+        result,data=self.invoke('steer','--team','demo','--message','Proceed with fixture','--ack-timeout-ms','100')
+        self.assertEqual(result.returncode,0,data)
+        evidence=data['evidence']
+        request=json.loads(self.runtime_calls()[0][4])
+        self.assertEqual(request['from_worker'],'supervisor')
+        self.assertEqual(request['to_worker'],'leader-fixed')
+        self.assertIn(evidence['message_id'],request['body'])
+        self.assertIn('Proceed with fixture',request['body'])
+        self.assertEqual(evidence['capability'],'experimental-one-way-file-ack')
+        self.assertEqual(self.calls('send-keys'),[])
+        self.env['PCAOM_TEST_SCENARIO']='steer-bad-ack'
+        self.assert_failure(self.invoke('steer','--team','demo','--message','next','--ack-timeout-ms','100'),'steer')
+
+    def test_mailbox_failure_uses_verified_named_buffer_and_marks_degraded(self):
+        self.team_fixture()
+        for scenario in ['api-error','dispatch-false','schema-error']:
+            self.env['PCAOM_TEST_SCENARIO']=scenario
+            self.log.write_text('')
+            result,data=self.invoke('steer','--team','demo','--message','fixture','--ack-timeout-ms','100')
+            self.assertEqual(result.returncode,0,data)
+            self.assertEqual(data['evidence']['transport'],'degraded-tmux-fallback')
+            self.assertEqual(len(self.calls('show-buffer')),1)
+            self.assertEqual(len(self.calls('delete-buffer')),1)
+            self.assertEqual(self.calls('paste-buffer')[0]['args'][2],'%2')
+            self.assertIn('degraded_reason',json.loads((self.run_dir/'run.json').read_text()))
+
+    def test_resume_requires_matching_team_window_and_leader_pane(self):
+        self.team_fixture()
+        result,data=self.invoke('resume','--team','demo')
+        self.assertEqual(result.returncode,0,data)
+        self.assertEqual(self.runtime_calls(),[['team','resume','demo']])
+        self.log.write_text('')
+        self.env['PCAOM_TEST_SCENARIO']='pane-pid-changed'
+        self.assert_failure(self.invoke('resume','--team','demo'),'resume')
+        self.assertEqual(self.runtime_calls(),[])
+
+    def test_finalize_rejects_pending_in_progress_or_failed_tasks(self):
+        self.team_fixture()
+        self.final_fixture()
+        for status in ['pending','blocked','in_progress','failed','unknown']:
+            (self.team_dir/'tasks/task-1.json').write_text(json.dumps(dict(self.task,status=status)))
+            self.assert_failure(self.invoke('finalize','--team','demo'),'finalize')
+        self.assertEqual(self.runtime_calls(),[])
+
+    def test_finalize_shuts_down_only_the_exact_terminal_team(self):
+        self.team_fixture()
+        self.final_fixture()
+        result,data=self.invoke('finalize','--team','demo')
+        self.assertEqual(result.returncode,0,data)
+        self.assertEqual(self.runtime_calls(),[['team','shutdown','demo']])
+        self.assertEqual(json.loads((self.run_dir/'run.json').read_text())['state'],'finalized')
+        self.assertEqual((self.run_dir/'final-handoff.md').read_text(),'Synthetic final handoff')
+        self.assertEqual(self.calls('kill-window'),[])
+
+    def test_finalize_failed_shutdown_preserves_evidence_and_can_retry(self):
+        self.team_fixture()
+        self.final_fixture()
+        self.env['PCAOM_TEST_SCENARIO']='shutdown-error'
+        self.assert_failure(self.invoke('finalize','--team','demo'),'finalize','COMMAND_FAILED')
+        manifest=json.loads((self.run_dir/'run.json').read_text())
+        self.assertEqual(manifest['state'],'go_submitted')
+        self.assertIn('shutdown_diagnostic',manifest)
+        proof=(self.run_dir/'final-evidence.json').read_bytes()
+        self.env['PCAOM_TEST_SCENARIO']='accepted'
+        result,data=self.invoke('finalize','--team','demo')
+        self.assertEqual(result.returncode,0,data)
+        self.assertEqual(proof,(self.run_dir/'final-evidence.json').read_bytes())
+
+    def test_frozen_identity_rejects_replacement_and_symlink(self):
+        self.team_fixture()
+        self.assertEqual(self.invoke('resume','--team','demo')[0].returncode,0)
+        self.log.write_text('')
+        self.config['created_at']='replacement'
+        self.write_team()
+        self.assert_failure(self.invoke('abort','--team','demo'),'abort')
+        self.config['created_at']='2026-09-27T00:00:00Z'
+        self.write_team()
+        regular=self.team_dir/'config-real.json'
+        (self.team_dir/'config.json').rename(regular)
+        (self.team_dir/'config.json').symlink_to(regular)
+        self.assert_failure(self.invoke('status','--team','demo'),'status')
+        self.assertEqual(self.runtime_calls(),[])
+
+    def test_steer_timeout_is_explicit_degradation_without_success(self):
+        self.team_fixture()
+        self.env['PCAOM_TEST_SCENARIO']='ack-timeout'
+        self.assert_failure(self.invoke('steer','--team','demo','--message','fixture','--ack-timeout-ms','1'),'steer')
+        self.assertEqual(len(self.calls('paste-buffer')),1)
+        self.assertEqual(len(self.calls('delete-buffer')),1)
+        self.assertIn('timeout',json.loads((self.run_dir/'run.json').read_text())['degraded_reason'])
+
+    def test_await_preserves_event_and_rejects_malformed_arguments(self):
+        self.team_fixture()
+        self.env['PCAOM_TEST_SCENARIO']='event'
+        result,data=self.invoke('await','--team','demo','--timeout-ms','100')
+        self.assertEqual(result.returncode,0,data)
+        self.assertEqual(data['evidence']['event']['event_id'],'e3')
+        self.assertEqual(data['evidence']['cursor'],'e3')
+        self.log.write_text('')
+        for args in [('await','--team','demo','--timeout-ms','60001'),('await','--team','demo'),('steer','--team','demo','--message','x','--message','y'),('steer','--team','demo','--message-id','x'),('abort','--team','demo','--force','yes')]:
+            self.assert_failure(self.invoke(*args),'arguments')
+        self.assertEqual(self.calls(),[])
+
+    def test_await_rejects_wrong_api_envelope(self):
+        self.team_fixture()
+        self.env['PCAOM_TEST_SCENARIO']='bad-envelope'
+        self.assert_failure(self.invoke('await','--team','demo','--timeout-ms','100'),'await')
+        self.assertEqual(self.calls('send-keys'),[])
+
+    def test_finalize_requires_exact_evidence_and_success_prefix(self):
+        self.team_fixture()
+        self.assert_failure(self.invoke('finalize','--team','demo'),'finalize','ENOENT')
+        self.final_fixture()
+        proof=json.loads((self.run_dir/'leader-final.json').read_text())
+        proof['verification'][0]['exit_code']=1
+        (self.run_dir/'leader-final.json').write_text(json.dumps(proof))
+        self.assert_failure(self.invoke('finalize','--team','demo'),'finalize')
+        self.assertEqual(self.runtime_calls(),[])
+        self.final_fixture()
+        self.env['PCAOM_TEST_SCENARIO']='bad-prefix'
+        self.assert_failure(self.invoke('finalize','--team','demo'),'finalize')
+        self.assertEqual(json.loads((self.run_dir/'run.json').read_text())['state'],'go_submitted')
+
+    def test_abort_uses_exact_team_identity_and_preserves_supervisor_window(self):
+        self.team_fixture()
+        result,data=self.invoke('abort','--team','demo')
+        self.assertEqual(result.returncode,0,data)
+        self.assertEqual(self.runtime_calls(),[['team','shutdown','demo','--force','--confirm-issues']])
+        self.assertEqual(json.loads((self.run_dir/'run.json').read_text())['state'],'aborted')
+        self.assertEqual(self.calls('kill-window'),[])
+
+    def test_lifecycle_rejects_journal_redirect_symlink_and_uncertain_state(self):
+        self.team_fixture()
+        journal=self.team_dir/'.membership-task-transaction.json'
+        journal.write_text('{}')
+        for cmd in ['status','resume','finalize','abort']:
+            self.assert_failure(self.invoke(cmd,'--team','demo'),cmd)
+        journal.unlink()
+        self.env['OMX_STATE_ROOT']='/unowned'
+        self.assert_failure(self.invoke('abort','--team','demo'),'abort')
+        del self.env['OMX_STATE_ROOT']
+        run=json.loads((self.run_dir/'run.json').read_text())
+        run['state']='go_submitting'
+        (self.run_dir/'run.json').write_text(json.dumps(run))
+        self.assertEqual(self.invoke('status','--team','demo')[0].returncode,0)
+        for cmd in ['resume','finalize','abort']:
+            self.assert_failure(self.invoke(cmd,'--team','demo'),cmd)
+        self.assertEqual(self.runtime_calls(),[])
 
     def test_preflight_requires_environment(self):
         for key in ['TMUX', 'TMUX_PANE', 'DEEPSEEK_API_KEY', 'CODEX_HOME']:
