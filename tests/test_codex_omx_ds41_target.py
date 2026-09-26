@@ -62,7 +62,13 @@ class CodexOmxDs41TargetTests(unittest.TestCase):
                          ["low", "high", "max"])
         self.assertEqual(model["minimal_client_version"], "0.144.0")
         self.assertNotIn("model_messages", model)
-        self.assertNotIn("base_instructions", model)
+
+    def test_catalog_includes_required_loader_fields(self):
+        model = json.loads(self.read_required("codex/deepseek-models.json"))["models"][0]
+        self.assertIs(model["support_verbosity"], True)
+        self.assertEqual(model["experimental_supported_tools"], [])
+        self.assertEqual(model["base_instructions"],
+                         "You are a coding assistant. Follow the applicable project instructions.")
 
     def test_install_map_has_exact_scopes_and_destinations(self):
         manifest = json.loads(self.read_required("install-manifest.json"))

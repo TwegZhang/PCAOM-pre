@@ -20,6 +20,9 @@
       "apply_patch_tool_type": "freeform",
       "input_modalities": ["text", "image"],
       "supports_parallel_tool_calls": true,
+      "support_verbosity": true,
+      "experimental_supported_tools": [],
+      "base_instructions": "You are a coding assistant. Follow the applicable project instructions.",
       "multi_agent_version": "v2"
     }
   ]
