@@ -47,6 +47,16 @@ Before `start`, establish all of the following:
   by DS41. Check presence without displaying the value; never put it in command
   arguments, handoffs, artifacts, logs, or observations.
 
+Example verification section for the Spec; replace the command with its actual
+acceptance command:
+
+````markdown
+## Verification
+```bash
+python3 -m unittest discover -s tests -v
+```
+````
+
 ## Command mapping
 
 Interpret the following as user invocations. Run their corresponding bridge

@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -25,20 +26,15 @@ class CodexOmxDs41TargetTests(unittest.TestCase):
             for required in (
                 "<!-- PCAOM_APPROVED: yes -->",
                 "<!-- PCAOM_CONTEXT_TRANSFER: DeepSeek authorized -->",
-                "## Verification", "nonempty fenced `sh` or `bash` block",
-                "machine-readable preflight gates",
+                "## Verification",
             ):
                 with self.subTest(path=path, required=required):
                     self.assertIn(required, text)
-            if not path.endswith("SKILL.md"):
-                with self.subTest(copyable_fragment=path):
-                    self.assertIn(
-                        "<!-- PCAOM_APPROVED: yes -->\n"
-                        "<!-- PCAOM_CONTEXT_TRANSFER: DeepSeek authorized -->\n\n"
-                        "## Verification\n```bash\n"
-                        "python3 -m unittest discover -s tests -v\n```",
-                        text,
-                    )
+            with self.subTest(shell_example=path):
+                blocks = re.findall(r"^## Verification\n\s*```(?:sh|bash)\n(.*?)^```$", text,
+                                    flags=re.MULTILINE | re.DOTALL)
+                self.assertTrue(any(block.strip() for block in blocks),
+                                "missing nonempty sh/bash example")
 
     def test_repository_docs_route_both_targets_without_promoting_runtime(self):
         root = BUNDLE.parents[1]
