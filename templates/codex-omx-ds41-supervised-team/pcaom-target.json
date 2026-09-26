@@ -1,0 +1,17 @@
+{
+  "schema_version": 0,
+  "target": "codex-omx-ds41-supervised-team",
+  "status": "generated-unverified",
+  "runtime_ref": {"codex_cli": "0.156.1", "oh_my_codex": "0.21.6", "tmux": "3.7b"},
+  "model": {"id": "deepseek-flash", "family": "DeepSeek V4.1 Flash", "provider": "deepseek", "protocol": "responses"},
+  "capabilities": {
+    "profile": "generated-unverified",
+    "installer": "generated-unverified",
+    "skill": "generated-unverified",
+    "supervisor_bridge": "experimental-unverified",
+    "ultragoal": "runtime-unverified",
+    "team": "runtime-unverified",
+    "worktree": "runtime-unverified",
+    "final_review": "runtime-unverified"
+  }
+}

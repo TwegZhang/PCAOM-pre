@@ -1,0 +1,26 @@
+{
+  "models": [
+    {
+      "slug": "deepseek-flash",
+      "display_name": "DeepSeek V4.1 Flash",
+      "description": "DeepSeek V4.1 Flash via the Responses API; runtime capabilities unverified.",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        {"effort": "low", "description": "Lighter reasoning"},
+        {"effort": "high", "description": "Higher reasoning depth"},
+        {"effort": "max", "description": "Maximum reasoning depth"}
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 1,
+      "minimal_client_version": "0.144.0",
+      "context_window": 1000000,
+      "truncation_policy": {"mode": "tokens", "limit": 10000},
+      "apply_patch_tool_type": "freeform",
+      "input_modalities": ["text", "image"],
+      "supports_parallel_tool_calls": true,
+      "multi_agent_version": "v2"
+    }
+  ]
+}

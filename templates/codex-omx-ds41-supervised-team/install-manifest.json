@@ -1,0 +1,10 @@
+{
+  "schema_version": 0,
+  "owner": "pcaom:codex-omx-ds41-supervised-team",
+  "files": [
+    {"source": "codex/pcaom-ds41.config.toml", "scope": "codex_home", "destination": "pcaom-ds41.config.toml"},
+    {"source": "codex/deepseek-models.json", "scope": "codex_home", "destination": "model-catalogs/pcaom-deepseek-models.json"},
+    {"source": "project/.codex/skills/pcaom-ds41-team/SKILL.md", "scope": "project", "destination": ".codex/skills/pcaom-ds41-team/SKILL.md"},
+    {"source": "project/.codex/skills/pcaom-ds41-team/scripts/supervisor-bridge.mjs", "scope": "project", "destination": ".codex/skills/pcaom-ds41-team/scripts/supervisor-bridge.mjs"}
+  ]
+}
