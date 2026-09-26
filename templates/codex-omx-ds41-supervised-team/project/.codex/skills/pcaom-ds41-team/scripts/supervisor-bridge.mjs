@@ -15,11 +15,12 @@ const redact = value => [...secrets].reduce((text,key) => text.split(key).join('
 const digest = value => createHash('sha256').update(value).digest('hex');
 const safeTeam = value => /^[a-z0-9][a-z0-9-]{0,63}$/.test(value);
 let deadline;
+let commandTimeout = 5000;
 let stage = 'arguments';
 function requireThat(condition, message) { if (!condition) throw new Error(message); }
 function run(program, args, options = {}) {
   const {privateOutput = false, ...spawnOptions} = options;
-  const timeout = deadline ? Math.max(1, Math.min(1000, deadline - Date.now())) : 1000;
+  const timeout = deadline ? Math.max(1, Math.min(commandTimeout, deadline - Date.now())) : commandTimeout;
   // Resolve against the trusted caller PATH even while a restoration client
   // intentionally omits PATH or imports the previous session's different PATH.
   const executable = (process.env.PATH ?? '').split(path.delimiter).map(dir => path.join(dir,program)).find(candidate => {
@@ -31,6 +32,7 @@ function run(program, args, options = {}) {
   if (result.status !== 0 || result.error) {
     const error = new Error(`${program} failed: ${redact(result.error?.message ?? '')} ${privateOutput ? '[private output omitted]' : stderr.slice(-2000)+' '+stdout.slice(-2000)}`);
     error.code = result.error?.code === 'ETIMEDOUT' ? 'COMMAND_TIMEOUT' : 'COMMAND_FAILED';
+    error.command_evidence = {program,code:result.error?.code ?? null,signal:result.signal ?? null,timeout_ms:timeout,status:result.status,spawn_error:redact(result.error?.message ?? '')};
     throw error;
   }
   return privateOutput ? result.stdout ?? '' : stdout;
@@ -42,7 +44,7 @@ function emit(ok, command, evidence) {
 }
 function parseArgs() {
   const [command, ...args] = process.argv.slice(2);
-  const allowed = {start: ['spec', 'workers', 'team', 'startup-timeout-ms'], inspect: ['team', 'pane', 'lines']}[command];
+  const allowed = {start: ['spec', 'workers', 'team', 'startup-timeout-ms','command-timeout-ms'], inspect: ['team', 'pane', 'lines','command-timeout-ms']}[command];
   requireThat(allowed, 'Unknown command; supported: start, inspect');
   const options = {};
   for (let i = 0; i < args.length; i += 2) {
@@ -64,6 +66,8 @@ function parseArgs() {
     integer('lines', 100, 1000);
   }
   if (options.team) requireThat(safeTeam(options.team), 'Unsafe team name');
+  integer('command-timeout-ms',5000,60000);
+  commandTimeout = options['command-timeout-ms'];
   return {command, options};
 }
 function inside(root, candidate) {
@@ -228,28 +232,47 @@ function withLaunchEnvironment(manifest, create) {
     result = create();
   } catch (error) { primary = error; }
   finally {
-    try {
-      assertSupervisor(manifest);
-      // The initial setter may have failed or timed out; establish the exact
-      // allowlist again before any restoration attach can import environment.
-      run('tmux',['set-option','-t',manifest.session,'update-environment',names.join(' ')]);
-      const restoredEnv = {...process.env};
-      for (const name of names) {
-        delete restoredEnv[name];
-        if (previous.get(name)?.value !== undefined) restoredEnv[name] = previous.get(name).value;
-      }
-      run('tmux',['-C','attach-session','-t',manifest.session],{input:'detach-client\n',env:restoredEnv});
-      for (const name of names) {
-        if (!previous.has(name)) run('tmux',['set-environment','-u','-t',manifest.session,name]);
-        else if (previous.get(name).removed) run('tmux',['set-environment','-r','-t',manifest.session,name]);
-      }
-      run('tmux',['set-option','-u','-t',manifest.session,'update-environment']);
-      for (const entry of entries) run('tmux',['set-option','-t',manifest.session,`update-environment[${entry[1]}]`,entry[2]]);
-      const restored = readEnvironment();
-      requireThat(names.every(name => JSON.stringify(restored.get(name)) === JSON.stringify(previous.get(name))), 'Session environment restoration not verified');
-    } catch (error) {
-      if (primary) primary.message += `; environment restoration failed: ${redact(error.message)}`;
-      else primary = new Error(`Environment restoration failed: ${redact(error.message)}`);
+    const diagnostics = [];
+    const attempt = (step,action) => {
+      try { assertSupervisor(manifest); action(); return true; }
+      catch (error) { diagnostics.push({step,error:redact(error.message)}); return false; }
+    };
+    const restoredEnv = {...process.env};
+    for (const name of names) {
+      delete restoredEnv[name];
+      if (previous.get(name)?.value !== undefined) restoredEnv[name] = previous.get(name).value;
+    }
+    let restored = false;
+    for (let number = 1; number <= 2 && !restored; number++) {
+      restored = attempt(`secure-restore-${number}`,() => {
+        run('tmux',['set-option','-t',manifest.session,'update-environment',names.join(' ')]);
+        run('tmux',['-C','attach-session','-t',manifest.session],{input:'detach-client\n',env:restoredEnv});
+        for (const name of names) {
+          if (!previous.has(name)) run('tmux',['set-environment','-u','-t',manifest.session,name]);
+          else if (previous.get(name).removed) run('tmux',['set-environment','-r','-t',manifest.session,name]);
+        }
+        const actual = readEnvironment();
+        requireThat(names.every(name => JSON.stringify(actual.get(name)) === JSON.stringify(previous.get(name))), 'Session environment restoration not verified');
+      });
+    }
+    // Independent fallback: failure to restore a previous value must never
+    // leave the newly imported secret or launcher paths in this session.
+    if (!restored) {
+      for (const name of names) attempt(`unset-imported-${name}`,() => run('tmux',['set-environment','-u','-t',manifest.session,name]));
+      attempt('verify-imported-values-absent',() => {
+        const actual = readEnvironment();
+        requireThat(names.every(name => !actual.has(name)), 'Imported environment cleanup not verified');
+      });
+    }
+    const optionReset = attempt('restore-option-inheritance',() => run('tmux',['set-option','-u','-t',manifest.session,'update-environment']));
+    for (const entry of entries) attempt(`restore-option-${entry[1]}`,() => run('tmux',['set-option','-t',manifest.session,`update-environment[${entry[1]}]`,entry[2]]));
+    const optionVerified = attempt('verify-option-restoration',() => requireThat(run('tmux',['show-options','-t',manifest.session,'update-environment']) === option, 'update-environment restoration not verified'));
+    if (diagnostics.length) manifest.environment_cleanup_diagnostics = diagnostics;
+    if (!restored || !optionReset || !optionVerified) {
+      const message = `Degraded environment restoration: ${diagnostics.map(item => item.step+': '+item.error).join('; ')}`;
+      if (primary) primary.message += '; '+message;
+      else { primary = new Error(message); primary.code = 'ENVIRONMENT_RESTORE_FAILED'; }
+      primary.cleanup_diagnostics = diagnostics;
     }
   }
   if (primary) throw primary;
@@ -277,6 +300,7 @@ function waitForAcknowledgment(manifest,file,expected) {
       requireThat(fs.realpathSync(file) === file, 'Acknowledgment must not traverse symlinks');
       const actual = JSON.parse(readRegular(file));
       requireThat(Object.keys(actual).sort().join(',') === Object.keys(expected).sort().join(',') && Object.entries(expected).every(([key,value]) => actual[key] === value), 'Acknowledgment fields do not match handoff');
+      assertExactIdentity(manifest);
       return;
     }
     capture(manifest.leader_pane_id); // Bounded diagnostics, never acceptance evidence.
@@ -307,7 +331,7 @@ function start(root, options) {
   const manifestPath = path.join(directory,'run.json');
   const manifest = {schema_version:1,team,project_root:root,server:supervisor[0].server,session:supervisor[0].session,supervisor_window_id:supervisor[0].window_id,supervisor_pane_id:supervisor[0].pane_id,profile:'pcaom-ds41',spec_path:specPath,spec_digest:specDigest,context_path:contextPath,context_digest:digest(context),state:'starting'};
   let published = false;
-  let buffer;
+  const buffers = [];
   let primary;
   try {
     stage = 'launch';
@@ -322,11 +346,14 @@ function start(root, options) {
     waitForLeader(manifest);
     const id = randomUUID();
     stage = 'handoff';
-    buffer = `pcaom-${team}-${id}`;
+    const buffer = `pcaom-${team}-${id}`;
+    buffers.push(buffer);
     const acknowledgmentPath = path.join(directory,'leader-accepted.json');
     requireThat(pathAbsent(acknowledgmentPath), 'Acknowledgment path already exists');
-    const acknowledgment = {schema_version:1,team,handoff_id:id,leader_pane_id:manifest.leader_pane_id};
-    const handoff = `Read the approved context at ${contextPath} (SHA256 ${manifest.context_digest}). Before fan-out or work, atomically create the following acknowledgment as an exclusive regular file (write a temporary file and link it without replacement), then remove the temporary file. Do not overwrite an existing acknowledgment.\nAcknowledgment path: ${JSON.stringify(acknowledgmentPath)}\nAcknowledgment JSON: ${JSON.stringify(acknowledgment)}\nThen own Ultragoal and explicitly start OMX Team ${team} with ${options.workers} workers. Preserve scope, constraints and verification commands. Do not delegate competing orchestration.`;
+    const acknowledgment = {schema_version:1,phase:'accepted-awaiting-go',team,handoff_id:id,leader_pane_id:manifest.leader_pane_id,context_digest:manifest.context_digest};
+    const handoff = `Validate the exact approved context at ${contextPath}, its SHA256 ${manifest.context_digest}, and workspace ${root}. Do not start Ultragoal, Team, workers, or implementation until a separate matching GO. After validation, atomically create the exact acknowledgment as an exclusive regular non-symlink file (write a temporary file and link it without replacement), remove the temporary file, and END TURN. Do not overwrite an existing acknowledgment.\nAcknowledgment path: ${JSON.stringify(acknowledgmentPath)}\nAcknowledgment JSON: ${JSON.stringify(acknowledgment)}\nWait for a separate GO bound to this handoff, team and context digest. Acknowledgment does not authorize execution.`;
+    manifest.state = 'awaiting_ack'; manifest.handoff_id = id;
+    atomicWrite(manifestPath,JSON.stringify(manifest,null,2)+'\n',true);
     run('tmux',['set-buffer','-b',buffer,'--',handoff]);
     requireThat(run('tmux',['show-buffer','-b',buffer]) === handoff, 'Named buffer read-back mismatch');
     assertExactIdentity(manifest);
@@ -335,15 +362,39 @@ function start(root, options) {
     run('tmux',['send-keys','-t',manifest.leader_pane_id,'Enter']);
     stage = 'acceptance';
     waitForAcknowledgment(manifest,acknowledgmentPath,acknowledgment);
-    manifest.state = 'accepted'; manifest.handoff_id = id;
+    manifest.state = 'accepted';
+    atomicWrite(manifestPath,JSON.stringify(manifest,null,2)+'\n',true);
+    stage = 'go';
+    manifest.go_id = randomUUID();
+    manifest.team_started_verified = false;
+    atomicWrite(manifestPath,JSON.stringify(manifest,null,2)+'\n',true);
+    const goBuffer = `pcaom-${team}-go-${manifest.go_id}`;
+    buffers.push(goBuffer);
+    const go = {schema_version:1,phase:'go',go_id:manifest.go_id,handoff_id:id,team,context_digest:manifest.context_digest,workers:options.workers};
+    const instruction = `GO JSON: ${JSON.stringify(go)}\nMatch this GO against your accepted handoff and context digest. You are the sole execution-plane fan-out owner. Exactly once for this go_id, create or resume Ultragoal and explicitly start OMX Team with the approved workers. Preserve approved constraints and verification commands. Do not replay this GO or create competing orchestration.`;
+    run('tmux',['set-buffer','-b',goBuffer,'--',instruction]);
+    requireThat(run('tmux',['show-buffer','-b',goBuffer]) === instruction, 'GO named buffer read-back mismatch');
+    assertExactIdentity(manifest);
+    // From this persisted boundary delivery may be uncertain: never kill or
+    // retry automatically, even if the first input command reports failure.
+    manifest.state = 'go_submitting';
+    atomicWrite(manifestPath,JSON.stringify(manifest,null,2)+'\n',true);
+    run('tmux',['send-keys','-t',manifest.leader_pane_id,'C-u']);
+    run('tmux',['paste-buffer','-t',manifest.leader_pane_id,'-b',goBuffer,'-p','-d']);
+    run('tmux',['send-keys','-t',manifest.leader_pane_id,'Enter']);
+    manifest.state = 'go_submitted'; manifest.delivery = 'transport-submitted';
     atomicWrite(manifestPath,JSON.stringify(manifest,null,2)+'\n',true);
     return manifest;
   } catch (error) {
     primary = error;
+    if (deadline && (Date.now() >= deadline || error.code === 'COMMAND_TIMEOUT')) error.code = 'STARTUP_TIMEOUT';
     error.stage = stage;
     deadline = undefined;
-    manifest.state = 'failed'; manifest.failure_stage = stage; manifest.diagnostic = redact(error.message).slice(-2000);
-    if (published) {
+    const goMayBeDelivered = ['go_submitting','go_submitted'].includes(manifest.state);
+    if (goMayBeDelivered) manifest.delivery = 'uncertain';
+    else manifest.state = 'failed';
+    manifest.failure_stage = stage; manifest.diagnostic = redact(error.message).slice(-2000);
+    if (published && !goMayBeDelivered) {
       const recorded = JSON.parse(readRegular(manifestPath));
       requireThat(recorded.window_id === manifest.window_id && recorded.leader_pane_id === manifest.leader_pane_id && recorded.session === manifest.session, 'Manifest changed; rollback refused');
       try { assertExactIdentity(recorded); run('tmux',['kill-window','-t',recorded.window_id]); manifest.cleanup = 'killed-owned-window'; }
@@ -353,16 +404,23 @@ function start(root, options) {
     throw error;
   } finally {
     deadline = undefined;
-    if (buffer) {
+    const cleanupErrors = [];
+    for (const buffer of buffers) {
       try {
         assertSupervisor(manifest);
         try { run('tmux',['delete-buffer','-b',buffer]); }
         catch (error) { if (!/no buffer|unknown buffer|buffer not found/i.test(error.message)) throw error; }
       } catch (error) {
         const diagnostic = `Named buffer cleanup failed: ${redact(error.message)}`;
-        if (primary) primary.message += '; '+diagnostic;
-        else throw new Error(diagnostic);
+        cleanupErrors.push(diagnostic);
       }
+    }
+    if (cleanupErrors.length) {
+      manifest.buffer_cleanup_diagnostics = cleanupErrors;
+      try { atomicWrite(manifestPath,JSON.stringify(manifest,null,2)+'\n',published); }
+      catch (error) { cleanupErrors.push(`Cleanup diagnostic persistence failed: ${redact(error.message)}`); }
+      if (primary) primary.message += '; '+cleanupErrors.join('; ');
+      else throw new Error(cleanupErrors.join('; '));
     }
   }
 }
@@ -379,6 +437,7 @@ function inspect(root, options) {
 }
 try {
   const {command,options} = parseArgs();
+  stage = command === 'start' ? 'preflight' : 'inspect';
   const root = rootDirectory();
   emit(true,command,command === 'start' ? start(root,options) : inspect(root,options));
-} catch (error) { emit(false,undefined,{error:redact(error.message),code:error.code ?? 'BRIDGE_ERROR',stage:error.stage ?? stage}); }
+} catch (error) { emit(false,undefined,{error:redact(error.message),code:error.code ?? 'BRIDGE_ERROR',stage:error.stage ?? stage,...(error.command_evidence ? {command_evidence:error.command_evidence}:{}),...(error.cleanup_diagnostics ? {cleanup_diagnostics:error.cleanup_diagnostics}:{})}); }

@@ -149,6 +149,9 @@ env_key_instructions = "Set DEEPSEEK_API_KEY in the trusted launcher environment
             "Official Codex must not edit code while DS41 Team is active",
             "named-buffer", "no daemon", "ACK:<message_id>",
             "BLOCKED_ARCHITECTURE", "BLOCKED_POLICY_CONFLICT",
+            "accepted-awaiting-go", "leader-accepted.json", "END TURN",
+            "go_submitting", "go_submitted", "Never automatically replay GO",
+            "Task 7", "--command-timeout-ms",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, text)

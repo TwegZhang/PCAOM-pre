@@ -84,16 +84,34 @@ and verification commands. It creates exactly one DS41 window,
 Require interactive startup evidence before delivering context. Use a fresh
 named-buffer for the handoff: load the exact text into a uniquely named tmux
 buffer, read it back and compare, clear the intended pane composer, then use
-bracketed paste from that named buffer and submit intentionally. Capture the
-pane again to verify acceptance. Never paste tmux's implicit/current buffer;
+bracketed paste from that named buffer and submit intentionally. Pane capture is
+diagnostic evidence only, never acceptance. Never paste tmux's implicit/current buffer;
 failed load, mismatch, or uncertain pane identity blocks submission.
 
-The handoff instructs the DS41 Leader to launch or resume Ultragoal and explicitly
-start OMX Team for the approved independent lanes. Official Codex does not start
-either workflow on the Leader's behalf. Use OMX's existing task, mailbox,
-worktree, and lifecycle interfaces; the bridge owns no replacement task store.
-If startup partially fails, preserve diagnostics and clean up only newly created
-resources whose ownership by this run is proven; leave the supervisor intact.
+The first handoff requires the Leader to validate the exact context, digest, and
+workspace, atomically create the exclusive regular non-symlink file
+`leader-accepted.json`, and END TURN. Its exact JSON fields are `schema_version: 1`,
+`phase: accepted-awaiting-go`, `team`, `handoff_id`, `leader_pane_id`, and
+`context_digest`. It forbids Ultragoal, Team, workers, and implementation until a
+separate matching GO. The bridge validates this ACK and the singleton pane/server
+identity before recording `accepted`.
+
+A second distinct verified named-buffer carries GO bound to `go_id`, `handoff_id`,
+Team, context digest, and worker count. It authorizes the DS41 Leader, as sole
+fan-out owner, to create or resume Ultragoal and start OMX Team exactly once.
+The bridge persists `go_submitting` before any GO input and `go_submitted` only
+after successful submission. This proves transport submission only; Team start
+remains unverified until Task 7 status evidence. Never automatically replay GO.
+From `go_submitting`, failures preserve uncertain delivery diagnostics and never
+automatically kill the window, including input or buffer-cleanup failures.
+Before that boundary, cleanup requires fresh exact singleton pane, server
+generation, and supervisor identity. Leave the supervisor intact.
+
+Official Codex does not start either workflow on the Leader's behalf. Use OMX's
+existing task, mailbox, worktree, and lifecycle interfaces; the bridge owns no
+replacement task store. Normal subprocess commands have a 5000 ms timeout;
+`--command-timeout-ms` provides an explicit bounded override for start/inspect
+diagnostics. `--startup-timeout-ms` bounds the ACK/GO startup sequence.
 
 ## Observe, wait, and steer
 

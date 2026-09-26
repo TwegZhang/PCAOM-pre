@@ -33,7 +33,9 @@ a = sys.argv[1:]
 root = pathlib.Path(os.environ['PCAOM_TEST_ROOT'])
 scenario = os.environ.get('PCAOM_TEST_SCENARIO', '')
 with open(os.environ['PCAOM_TEST_CALL_LOG'], 'a') as f:
-    f.write(json.dumps({'program':p,'args':a,'selected_env':{k:os.environ.get(k) for k in ['OMX_TEAM_WORKER_CLI','OMX_TEAM_WORKER_LAUNCH_ARGS']}})+'\n')
+    manifest=root/'project/.omx/pcaom-supervisor/demo/run.json'
+    state=json.loads(manifest.read_text()).get('state') if manifest.exists() else None
+    f.write(json.dumps({'program':p,'args':a,'manifest_state':state,'selected_env':{k:os.environ.get(k) for k in ['OMX_TEAM_WORKER_CLI','OMX_TEAM_WORKER_LAUNCH_ARGS']}})+'\n')
 if a in [['--version'], ['-V']]:
     if scenario == 'delayed-version' and p == 'codex':
         import time
@@ -49,12 +51,16 @@ elif a[0] == 'list-panes':
     print('$1\t@1\t%1\tsupervisor\t0\tcodex'+generation)
     if (root/'created').exists():
         print('$1\t'+('@9' if scenario == 'changed' or (scenario == 'identity-after-buffer' and (root/'buffer').exists()) else '@2')+'\t%2\tds41-team-demo\t'+('1' if scenario == 'dead' else '0')+'\t'+('zsh' if scenario == 'timeout' else 'codex')+generation)
+        if (root/'workers').exists(): print('$1\t@2\t%3\tds41-team-demo\t0\tcodex'+generation)
 elif a[0] == 'show-environment':
     if (root/'session-env.json').exists():
         for key,value in json.loads((root/'session-env.json').read_text()).items():
             print('-'+key if value is None else key+'='+value)
     else: print('DEEPSEEK_API_KEY=previous-secret-sentinel\nCODEX_HOME=/previous/home\nPATH=/usr/bin:/bin' if scenario == 'previous-env' else '-DEEPSEEK_API_KEY')
 elif a[0] == '-C':
+    count=int((root/'attaches').read_text())+1 if (root/'attaches').exists() else 1
+    (root/'attaches').write_text(str(count))
+    if scenario == 'restore-fails' and count > 1: sys.exit('restoration attach injected failure')
     if scenario != 'import-fails':
         (root/'session-env.json').write_text(json.dumps({k:os.environ.get(k) for k in ['DEEPSEEK_API_KEY','CODEX_HOME','PATH']}))
 elif a[0] == 'set-environment':
@@ -77,13 +83,20 @@ elif a[0] == 'show-buffer':
     sys.stdout.write('wrong' if scenario in ['buffer','buffer-cleanup'] else (root/'buffer').read_text())
 elif a[0] == 'send-keys' and a[-1] == 'Enter':
     (root/'entered').touch()
+    text=(root/'buffer').read_text()
+    if text.startswith('GO JSON: '):
+        (root/'go').write_text(text)
+        if scenario == 'go-enter': sys.exit('GO Enter failure')
+        if scenario == 'workers-after-go': (root/'workers').touch()
+        sys.exit(0)
     if scenario == 'submit': sys.exit('submission failed')
-    if scenario in ['accepted','cleanup','bad-ack','previous-env','symlink-ack']:
+    if scenario in ['accepted','cleanup','bad-ack','stale-ack','previous-env','symlink-ack','early-workers','workers-after-go','go-enter','go-paste']:
         import re
         text=(root/'buffer').read_text()
         ack_path=json.loads(re.search(r'^Acknowledgment path: (.+)$',text,re.M)[1])
         ack=json.loads(re.search(r'^Acknowledgment JSON: (.+)$',text,re.M)[1])
         if scenario == 'bad-ack': ack['team']='wrong'
+        if scenario == 'stale-ack': ack['handoff_id']='old-handoff'
         temporary=pathlib.Path(ack_path+'.tmp')
         temporary.write_text(json.dumps(ack))
         temporary.chmod(0o600)
@@ -91,6 +104,9 @@ elif a[0] == 'send-keys' and a[-1] == 'Enter':
         else:
             os.link(temporary,ack_path)
             temporary.unlink()
+        if scenario == 'early-workers': (root/'workers').touch()
+elif a[0] == 'paste-buffer' and scenario == 'go-paste' and (root/'buffer').read_text().startswith('GO JSON: '):
+    sys.exit('GO paste failure')
 elif a[0] == 'paste-buffer' and scenario == 'paste':
     sys.exit('paste failed')
 elif a[0] == 'delete-buffer':
@@ -154,7 +170,14 @@ class BridgeTests(unittest.TestCase):
 
     def start(self):
         timeout = '350' if self.env.get('PCAOM_TEST_SCENARIO') in ['timeout','acceptance','echo'] else '5000'
-        return self.invoke('start', '--spec', str(self.spec), '--workers', '2', '--team', 'demo', '--startup-timeout-ms', timeout)
+        return self.invoke('start', '--spec', str(self.spec), '--workers', '2', '--team', 'demo', '--startup-timeout-ms', timeout, '--command-timeout-ms', '100' if self.env.get('PCAOM_TEST_SCENARIO') == 'delayed-version' else '5000')
+
+    def assert_failure(self, outcome, stage, code='BRIDGE_ERROR'):
+        result,data=outcome
+        self.assertNotEqual(result.returncode,0,data)
+        self.assertEqual(data.get('stage'),stage,data)
+        self.assertEqual(data.get('code'),code,data)
+        return data
 
     def calls(self, command=None):
         calls = [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
@@ -164,14 +187,14 @@ class BridgeTests(unittest.TestCase):
         for key in ['TMUX', 'TMUX_PANE', 'DEEPSEEK_API_KEY', 'CODEX_HOME']:
             old = self.env.pop(key)
             with self.subTest(key=key):
-                self.assertNotEqual(self.start()[0].returncode, 0)
+                self.assert_failure(self.start(),'preflight')
                 self.assertEqual(self.calls('new-window'), [])
             self.env[key] = old
 
     def test_preflight_rejects_versions(self):
         for scenario in ['tmux-version', 'codex-version', 'omx-version']:
             self.env['PCAOM_TEST_SCENARIO'] = scenario
-            self.assertNotEqual(self.start()[0].returncode, 0)
+            self.assert_failure(self.start(),'preflight')
             self.assertEqual(self.calls('new-window'), [])
 
     def test_omx_exact_version_with_diagnostics(self):
@@ -179,16 +202,17 @@ class BridgeTests(unittest.TestCase):
             self.env['PCAOM_TEST_VERSION'] = version
             self.profile.chmod(0)
             result, data = self.start()
-            self.assertNotEqual(result.returncode, 0)
+            self.assert_failure((result,data),'preflight')
             self.assertIn('readable', data['error'])
         for version in ['oh-my-codex v0.21.7', 'oh-my-codex v0.21.6-beta', 'oh-my-codex vv0.21.6', 'junk\noh-my-codex v0.21.6', 'oh-my-codex v0.21.6\noh-my-codex v0.22.0']:
             self.env['PCAOM_TEST_VERSION'] = version
-            self.assertIn('version', self.start()[1]['error'])
+            data=self.assert_failure(self.start(),'preflight')
+            self.assertIn('version',data['error'],data)
 
     def test_preflight_exact_team_collision_without_runtime_commands(self):
         state = self.project/'.omx/state/team/demo'
         state.mkdir(parents=True)
-        self.assertNotEqual(self.start()[0].returncode, 0)
+        self.assert_failure(self.start(),'preflight')
         self.assertEqual(self.calls('new-window'), [])
         self.assertEqual([c for c in self.calls() if c['program'] == 'omx' and c['args'] != ['--version']], [])
 
@@ -196,7 +220,7 @@ class BridgeTests(unittest.TestCase):
         for scenario in ['dead', 'fatal']:
             with self.subTest(scenario=scenario):
                 self.env['PCAOM_TEST_SCENARIO'] = scenario
-                self.assertNotEqual(self.start()[0].returncode, 0)
+                self.assert_failure(self.start(),'readiness')
                 self.assertEqual(self.calls('set-buffer'), [])
                 self.assertEqual(self.start_stage(), 'readiness')
                 if (self.project/'.omx').exists(): shutil.rmtree(self.project/'.omx')
@@ -209,11 +233,11 @@ class BridgeTests(unittest.TestCase):
         for path in [self.profile, self.catalog, self.skill, self.spec]:
             original = path.read_text()
             path.unlink()
-            self.assertNotEqual(self.start()[0].returncode, 0)
+            self.assert_failure(self.start(),'preflight','ENOENT')
             path.write_text(original)
         for text in [SPEC.replace('PCAOM_APPROVED: yes', 'PCAOM_APPROVED: no'), SPEC.replace('DeepSeek authorized','no'), SPEC.replace('python3 -m unittest','')]:
             self.spec.write_text(text)
-            self.assertNotEqual(self.start()[0].returncode, 0)
+            self.assert_failure(self.start(),'preflight')
         self.assertEqual(self.calls('new-window'), [])
 
     def test_spec_symlink_outside_and_non_git_rejected(self):
@@ -221,24 +245,24 @@ class BridgeTests(unittest.TestCase):
         outside = self.root/'outside.md'
         outside.write_text(SPEC)
         self.spec.symlink_to(outside)
-        self.assertNotEqual(self.start()[0].returncode, 0)
+        self.assert_failure(self.start(),'preflight')
         self.spec.unlink()
         self.spec.write_text(SPEC)
-        shutil.rmtree(self.project/'.git')
-        self.assertNotEqual(self.start()[0].returncode, 0)
+        if (self.project/'.git').exists(): shutil.rmtree(self.project/'.git')
+        self.assert_failure(self.start(),'preflight','COMMAND_FAILED')
         self.assertEqual(self.calls('new-window'), [])
 
     def test_comment_only_verification_is_not_executable(self):
         self.spec.write_text(SPEC.replace('python3 -m unittest', '# run tests later'))
-        self.assertNotEqual(self.start()[0].returncode, 0)
+        self.assert_failure(self.start(),'preflight')
         self.assertEqual(self.calls('new-window'), [])
 
     def test_unreadable_profile_and_existing_window_fail_preflight(self):
         self.profile.chmod(0)
-        self.assertNotEqual(self.start()[0].returncode, 0)
+        self.assert_failure(self.start(),'preflight')
         self.profile.chmod(0o600)
         (self.root/'created').touch()
-        self.assertNotEqual(self.start()[0].returncode, 0)
+        self.assert_failure(self.start(),'preflight')
         self.assertEqual(self.calls('new-window'), [])
 
     def test_manifest_symlink_directory_is_rejected_for_inspect(self):
@@ -247,7 +271,7 @@ class BridgeTests(unittest.TestCase):
         moved = directory.with_name('moved')
         directory.rename(moved)
         directory.symlink_to(moved, target_is_directory=True)
-        self.assertNotEqual(self.invoke('inspect','--team','demo','--pane','leader')[0].returncode, 0)
+        self.assert_failure(self.invoke('inspect','--team','demo','--pane','leader'),'inspect')
 
     def test_start_manifest_context_profile_and_ordered_handoff(self):
         result, data = self.start()
@@ -260,19 +284,22 @@ class BridgeTests(unittest.TestCase):
         for call in before:
             self.assertIn((call['program'], call['args'][0]), [('codex','--version'), ('omx','--version'), ('tmux','-V'), ('tmux','list-panes'), ('tmux','show-environment'), ('tmux','show-options'), ('tmux','set-option'), ('tmux','-C')])
         calls = [c['args'] for c in self.calls()]
-        set_args, = [a for a in calls if a[0] == 'set-buffer']
+        set_args, go_args = [a for a in calls if a[0] == 'set-buffer']
         self.assertEqual(set_args[:2], ['set-buffer','-b'])
         self.assertEqual(set_args[3], '--')
-        self.assertIn('Before fan-out or work, atomically create', set_args[-1])
+        self.assertIn('END TURN', set_args[-1])
+        self.assertIn('Do not start Ultragoal, Team, workers, or implementation', set_args[-1])
+        self.assertIn('GO JSON:', go_args[-1])
+        self.assertNotEqual(set_args[2],go_args[2])
         self.assertNotIn('PCAOM_READY', set_args[-1])
         sequence = [set_args, ['show-buffer','-b',set_args[2]], ['send-keys','-t','%2','C-u'], ['paste-buffer','-t','%2','-b',set_args[2],'-p','-d'], ['send-keys','-t','%2','Enter']]
         indexes = [calls.index(a) for a in sequence]
         self.assertEqual(indexes, sorted(indexes))
-        self.assertEqual(self.calls('delete-buffer')[-1]['args'],['delete-buffer','-b',set_args[2]])
+        self.assertEqual([c['args'] for c in self.calls('delete-buffer')],[['delete-buffer','-b',set_args[2]],['delete-buffer','-b',go_args[2]]])
         self.assertFalse((self.root/'buffer').exists())
         manifest_path = self.project/'.omx/pcaom-supervisor/demo/run.json'
         manifest = json.loads(manifest_path.read_text())
-        for key, value in {'schema_version':1,'team':'demo','session':'$1','window_id':'@2','leader_pane_id':'%2','supervisor_pane_id':'%1','profile':'pcaom-ds41','state':'accepted'}.items():
+        for key, value in {'schema_version':1,'team':'demo','session':'$1','window_id':'@2','leader_pane_id':'%2','supervisor_pane_id':'%1','profile':'pcaom-ds41','state':'go_submitted'}.items():
             self.assertEqual(manifest[key],value)
         context = Path(manifest['context_path'])
         self.assertEqual(manifest['context_digest'], hashlib.sha256(context.read_bytes()).hexdigest())
@@ -281,8 +308,57 @@ class BridgeTests(unittest.TestCase):
         for path in [manifest_path,context]:
             self.assertEqual(path.stat().st_mode & 0o777,0o600)
             self.assertNotIn(self.env['DEEPSEEK_API_KEY'],path.read_text())
-        self.assertNotEqual(self.start()[0].returncode,0)
+        self.assert_failure(self.start(),'preflight')
         self.assertEqual(len(self.calls('new-window')),1)
+
+    def test_restoration_attach_failure_removes_imported_environment(self):
+        self.env['PCAOM_TEST_SCENARIO']='restore-fails'
+        result,data=self.start()
+        self.assertNotEqual(result.returncode,0,data)
+        self.assertEqual(data.get('stage'),'launch',data)
+        self.assertEqual(data.get('code'),'ENVIRONMENT_RESTORE_FAILED',data)
+        restored=json.loads((self.root/'session-env.json').read_text())
+        self.assertEqual(restored,{},data)
+        self.assertIn(['set-option','-u','-t','$1','update-environment'],[c['args'] for c in self.calls('set-option')])
+
+    def test_ack_then_go_transport_only_and_workers_allowed_after_go(self):
+        self.env['PCAOM_TEST_SCENARIO']='workers-after-go'
+        result,data=self.start()
+        self.assertEqual(result.returncode,0,data)
+        enter=self.calls('send-keys')
+        self.assertEqual([c['manifest_state'] for c in enter],['awaiting_ack','awaiting_ack','go_submitting','go_submitting'])
+        manifest=json.loads((self.project/'.omx/pcaom-supervisor/demo/run.json').read_text())
+        self.assertEqual(manifest['state'],'go_submitted')
+        self.assertEqual(manifest['pane_ids'],['%2'])
+        self.assertFalse(manifest['team_started_verified'])
+        ack=json.loads((self.project/'.omx/pcaom-supervisor/demo/leader-accepted.json').read_text())
+        self.assertEqual(ack['phase'],'accepted-awaiting-go')
+        self.assertEqual(ack['context_digest'],manifest['context_digest'])
+
+    def test_early_workers_prevent_go(self):
+        self.env['PCAOM_TEST_SCENARIO']='early-workers'
+        result,data=self.start()
+        self.assertNotEqual(result.returncode,0,data)
+        self.assertEqual(data.get('stage'),'acceptance',data)
+        self.assertEqual(data.get('code'),'BRIDGE_ERROR',data)
+        self.assertFalse((self.root/'go').exists())
+        self.assertEqual(self.calls('kill-window'),[])
+
+    def test_go_delivery_failure_never_kills_or_replays(self):
+        for scenario in ['go-paste','go-enter']:
+            self.env['PCAOM_TEST_SCENARIO']=scenario
+            result,data=self.start()
+            self.assertNotEqual(result.returncode,0,data)
+            self.assertEqual(data.get('stage'),'go',data)
+            self.assertEqual(data.get('code'),'COMMAND_FAILED',data)
+            self.assertEqual(self.calls('kill-window'),[])
+            self.assertEqual(len(self.calls('set-buffer')),2)
+            manifest=json.loads((self.project/'.omx/pcaom-supervisor/demo/run.json').read_text())
+            self.assertEqual(manifest['state'],'go_submitting')
+            self.assertEqual(manifest['delivery'],'uncertain')
+            if (self.project/'.omx').exists(): shutil.rmtree(self.project/'.omx')
+            for file in ['calls.jsonl','created','entered','go','attaches','session-env.json']:
+                (self.root/file).unlink(missing_ok=True)
 
     def test_launch_environment_and_server_generation(self):
         result, data = self.start()
@@ -295,45 +371,47 @@ class BridgeTests(unittest.TestCase):
         self.env['PCAOM_TEST_SCENARIO']='restarted'
         count=len(self.calls('capture-pane'))
         result,data=self.invoke('inspect','--team','demo','--pane','leader')
-        self.assertNotEqual(result.returncode,0)
+        self.assert_failure((result,data),'inspect')
         self.assertIn('generation',data['error'])
         self.assertEqual(len(self.calls('capture-pane')),count)
 
     def test_import_must_be_verified_before_window_creation(self):
         self.env['PCAOM_TEST_SCENARIO']='import-fails'
         result,data=self.start()
-        self.assertNotEqual(result.returncode,0)
-        self.assertEqual(data['stage'],'launch')
+        self.assert_failure((result,data),'launch')
         self.assertEqual(self.calls('new-window'),[])
 
     def test_failed_allowlist_never_attaches_with_unrestricted_environment(self):
         self.env['PCAOM_TEST_SCENARIO']='option-fails'
         result,data=self.start()
-        self.assertNotEqual(result.returncode,0)
-        self.assertEqual(data['stage'],'launch')
-        self.assertEqual(data['code'],'COMMAND_FAILED')
+        self.assert_failure((result,data),'launch','COMMAND_FAILED')
         self.assertEqual(self.calls('-C'),[])
         self.assertEqual(self.calls('new-window'),[])
 
     def test_prompt_echo_cannot_acknowledge(self):
         self.env['PCAOM_TEST_SCENARIO']='echo'
         result,data=self.start()
-        self.assertNotEqual(result.returncode,0)
-        self.assertEqual(data['stage'],'acceptance')
+        self.assert_failure((result,data),'acceptance','STARTUP_TIMEOUT')
+        self.assertEqual(len(self.calls('set-buffer')),1,data)
         self.assertFalse((self.project/'.omx/pcaom-supervisor/demo/leader-accepted.json').exists())
 
     def test_wrong_ack_rejected(self):
         self.env['PCAOM_TEST_SCENARIO']='bad-ack'
         result,data=self.start()
-        self.assertNotEqual(result.returncode,0)
-        self.assertEqual(data['stage'],'acceptance')
+        self.assert_failure((result,data),'acceptance')
+        self.assertEqual(len(self.calls('set-buffer')),1,data)
 
     def test_symlink_ack_rejected(self):
         self.env['PCAOM_TEST_SCENARIO']='symlink-ack'
         result,data=self.start()
-        self.assertNotEqual(result.returncode,0)
-        self.assertEqual(data['stage'],'acceptance')
+        self.assert_failure((result,data),'acceptance')
         self.assertIn('symlinks',data['error'])
+
+    def test_stale_ack_never_sends_go(self):
+        self.env['PCAOM_TEST_SCENARIO']='stale-ack'
+        data=self.assert_failure(self.start(),'acceptance')
+        self.assertEqual(len(self.calls('set-buffer')),1,data)
+        self.assertFalse((self.root/'go').exists(),data)
 
     def test_previous_session_environment_and_local_option_restored(self):
         self.env['PCAOM_TEST_SCENARIO']='previous-env'
@@ -347,8 +425,7 @@ class BridgeTests(unittest.TestCase):
             with self.subTest(scenario=scenario):
                 self.env['PCAOM_TEST_SCENARIO']=scenario
                 result,data=self.start()
-                self.assertNotEqual(result.returncode,0)
-                self.assertEqual(data['stage'],'handoff')
+                self.assert_failure((result,data),'handoff','COMMAND_FAILED' if scenario in ['paste','submit'] else 'BRIDGE_ERROR')
                 self.assertEqual(len(self.calls('delete-buffer')),1)
                 self.assertFalse((self.root/'buffer').exists())
                 if (self.project/'.omx').exists(): shutil.rmtree(self.project/'.omx')
@@ -358,17 +435,16 @@ class BridgeTests(unittest.TestCase):
     def test_delayed_version_reports_preflight_timeout(self):
         self.env['PCAOM_TEST_SCENARIO']='delayed-version'
         result,data=self.start()
-        self.assertNotEqual(result.returncode,0)
-        self.assertEqual(data['stage'],'preflight')
-        self.assertEqual(data['code'],'COMMAND_TIMEOUT')
+        self.assert_failure((result,data),'preflight','COMMAND_TIMEOUT')
+        self.assertEqual(data['command_evidence']['timeout_ms'],100,data)
+        self.assertEqual(data['command_evidence']['code'],'ETIMEDOUT',data)
         self.assertIn('ETIMEDOUT',data['error'])
         self.assertEqual(self.calls('new-window'),[])
 
     def test_restarted_server_never_captured_or_killed_on_start_failure(self):
         self.env['PCAOM_TEST_SCENARIO']='restart-start'
         result,data=self.start()
-        self.assertNotEqual(result.returncode,0)
-        self.assertEqual(data['stage'],'launch')
+        self.assert_failure((result,data),'launch','ENVIRONMENT_RESTORE_FAILED')
         self.assertIn('generation',data['error'])
         self.assertEqual(self.calls('capture-pane'),[])
         self.assertEqual(self.calls('kill-window'),[])
@@ -376,14 +452,15 @@ class BridgeTests(unittest.TestCase):
     def test_cleanup_failure_is_reported(self):
         self.env['PCAOM_TEST_SCENARIO']='cleanup'
         result,data=self.start()
-        self.assertNotEqual(result.returncode,0)
+        self.assert_failure((result,data),'go')
         self.assertIn('Named buffer cleanup failed',data['error'])
+        self.assertEqual(self.calls('kill-window'),[],data)
+        self.assertEqual(json.loads((self.project/'.omx/pcaom-supervisor/demo/run.json').read_text())['state'],'go_submitted',data)
 
     def test_cleanup_failure_preserves_primary_failure(self):
         self.env['PCAOM_TEST_SCENARIO']='buffer-cleanup'
         result,data=self.start()
-        self.assertNotEqual(result.returncode,0)
-        self.assertEqual(data['stage'],'handoff')
+        self.assert_failure((result,data),'handoff')
         self.assertIn('read-back mismatch',data['error'])
         self.assertIn('Named buffer cleanup failed',data['error'])
 
@@ -392,31 +469,30 @@ class BridgeTests(unittest.TestCase):
         for altered in [original.replace('https://api.deepseek.com/','https://unauthorized.example/'), original+'\nmodel = "deepseek-flash"\n', original.replace('[model_providers.deepseek]','[model_providers.other]'), original.replace('model_provider = "deepseek"','model_provider = "other"'), original+'\n[model_providers.other]\nname = "Other"\n', original.replace('forced_login_method = "api"','forced_login_method = "chatgpt"')]:
             self.profile.write_text(altered)
             result,data=self.start()
-            self.assertNotEqual(result.returncode,0)
-            self.assertEqual(data['stage'],'preflight')
+            self.assert_failure((result,data),'preflight')
             self.assertEqual(self.calls('new-window'),[])
 
     def test_timeout_rolls_back_only_proven_window(self):
         self.env['PCAOM_TEST_SCENARIO']='timeout'
-        self.assertNotEqual(self.start()[0].returncode,0)
+        self.assert_failure(self.start(),'readiness','STARTUP_TIMEOUT')
         self.assertEqual([c['args'] for c in self.calls('kill-window')],[['kill-window','-t','@2']])
         manifest=json.loads((self.project/'.omx/pcaom-supervisor/demo/run.json').read_text())
         self.assertEqual(manifest['state'],'failed')
 
     def test_changed_identity_does_not_kill(self):
         self.env['PCAOM_TEST_SCENARIO']='changed'
-        self.assertNotEqual(self.start()[0].returncode,0)
+        self.assert_failure(self.start(),'readiness')
         self.assertEqual(self.calls('kill-window'),[])
 
     def test_bad_buffer_never_submits(self):
         self.env['PCAOM_TEST_SCENARIO']='buffer'
-        self.assertNotEqual(self.start()[0].returncode,0)
+        self.assert_failure(self.start(),'handoff')
         self.assertEqual(self.calls('paste-buffer'),[])
         self.assertEqual(self.calls('send-keys'),[])
 
     def test_failed_acceptance_rolls_back(self):
         self.env['PCAOM_TEST_SCENARIO']='acceptance'
-        self.assertNotEqual(self.start()[0].returncode,0)
+        self.assert_failure(self.start(),'acceptance','STARTUP_TIMEOUT')
         self.assertEqual([c['args'] for c in self.calls('kill-window')],[['kill-window','-t','@2']])
 
     def test_inspect_requires_manifest_and_fresh_identity(self):
@@ -426,13 +502,13 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(result.returncode,0,data)
             self.assertIn('[REDACTED]',result.stdout)
         for args in [('demo','%1'),('demo','current'),('unknown','leader')]:
-            self.assertNotEqual(self.invoke('inspect','--team',args[0],'--pane',args[1])[0].returncode,0)
+            self.assert_failure(self.invoke('inspect','--team',args[0],'--pane',args[1]),'arguments' if args[1]=='current' else 'inspect','ENOENT' if args[0]=='unknown' else 'BRIDGE_ERROR')
         self.env['PCAOM_TEST_SCENARIO']='changed'
-        self.assertNotEqual(self.invoke('inspect','--team','demo','--pane','leader')[0].returncode,0)
+        self.assert_failure(self.invoke('inspect','--team','demo','--pane','leader'),'inspect')
 
     def test_malformed_arguments_are_one_json_error(self):
         for args in [[],['unknown'],['start'],['inspect','--team','x'],['start','--spec','x','--workers','0'],['start','--spec','x','--workers','2','--workers','3'],['inspect','--team','../x','--pane','leader'],['inspect','--team','x','--pane','leader','--unknown','x']]:
-            self.assertNotEqual(self.invoke(*args)[0].returncode,0)
+            self.assert_failure(self.invoke(*args),'arguments')
 
 
 if __name__ == '__main__':
