@@ -1,7 +1,12 @@
 import json
-import tomllib
+import sys
 import unittest
 from pathlib import Path
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    tomllib = None
 
 
 BUNDLE = Path(__file__).resolve().parents[1] / "templates" / "codex-omx-ds41-supervised-team"
@@ -34,7 +39,23 @@ class CodexOmxDs41TargetTests(unittest.TestCase):
 
     def test_profile_uses_environment_auth_and_separate_profile_file(self):
         text = self.read_required("codex/pcaom-ds41.config.toml")
-        self.assertEqual(tomllib.loads(text), {
+        expected_text = '''model = "deepseek-flash"
+model_provider = "deepseek"
+model_reasoning_effort = "high"
+forced_login_method = "api"
+web_search = "disabled"
+model_catalog_json = "__PCAOM_MODEL_CATALOG_PATH__"
+
+[model_providers.deepseek]
+name = "DeepSeek"
+base_url = "https://api.deepseek.com/"
+wire_api = "responses"
+env_key = "DEEPSEEK_API_KEY"
+env_key_instructions = "Set DEEPSEEK_API_KEY in the trusted launcher environment."
+'''
+        self.assertEqual((BUNDLE / "codex/pcaom-ds41.config.toml").read_bytes(),
+                         expected_text.encode("utf-8"))
+        expected_profile = {
             "model": "deepseek-flash", "model_provider": "deepseek",
             "model_reasoning_effort": "high", "forced_login_method": "api",
             "web_search": "disabled", "model_catalog_json": "__PCAOM_MODEL_CATALOG_PATH__",
@@ -43,7 +64,9 @@ class CodexOmxDs41TargetTests(unittest.TestCase):
                 "wire_api": "responses", "env_key": "DEEPSEEK_API_KEY",
                 "env_key_instructions": "Set DEEPSEEK_API_KEY in the trusted launcher environment.",
             }},
-        })
+        }
+        if tomllib is not None:
+            self.assertEqual(tomllib.loads(text), expected_profile)
         self.assertNotIn("experimental_bearer_token", text)
         self.assertNotIn("[profiles.", text)
         self.assertNotRegex(text, r"sk-[A-Za-z0-9]")

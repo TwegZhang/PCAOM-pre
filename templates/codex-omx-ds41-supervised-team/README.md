@@ -36,8 +36,9 @@ Codex configuration and unrelated project instructions.
 ## Prerequisites and activation
 
 The validation baseline is Codex CLI `0.156.1`, oh-my-codex `0.21.6`, and tmux
-`3.7b`. Node.js is required for the installer and bridge; Python 3.11 or newer
-is required for the static tests using `tomllib`. Runtime use also requires
+`3.7b`. Node.js is required for the installer and bridge. Static tests support
+Python 3.9 or newer with an exact profile template check; Python 3.11 or newer
+also validates the profile using `tomllib`. Runtime use also requires
 an approved Feature Spec, an authorized downstream workspace and permission to
 send its task context to DeepSeek.
 
