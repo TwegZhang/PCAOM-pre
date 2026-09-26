@@ -13,6 +13,33 @@ BUNDLE = Path(__file__).resolve().parents[1] / "templates" / "codex-omx-ds41-sup
 
 
 class CodexOmxDs41TargetTests(unittest.TestCase):
+    def test_start_docs_explain_exact_spec_preflight_syntax(self):
+        root = BUNDLE.parents[1]
+        paths = (
+            "docs/methodology/codex-omx-dsh-usage-guide.md",
+            "templates/codex-omx-ds41-supervised-team/README.md",
+            "templates/codex-omx-ds41-supervised-team/project/.codex/skills/pcaom-ds41-team/SKILL.md",
+        )
+        for path in paths:
+            text = (root / path).read_text(encoding="utf-8")
+            for required in (
+                "<!-- PCAOM_APPROVED: yes -->",
+                "<!-- PCAOM_CONTEXT_TRANSFER: DeepSeek authorized -->",
+                "## Verification", "nonempty fenced `sh` or `bash` block",
+                "machine-readable preflight gates",
+            ):
+                with self.subTest(path=path, required=required):
+                    self.assertIn(required, text)
+            if not path.endswith("SKILL.md"):
+                with self.subTest(copyable_fragment=path):
+                    self.assertIn(
+                        "<!-- PCAOM_APPROVED: yes -->\n"
+                        "<!-- PCAOM_CONTEXT_TRANSFER: DeepSeek authorized -->\n\n"
+                        "## Verification\n```bash\n"
+                        "python3 -m unittest discover -s tests -v\n```",
+                        text,
+                    )
+
     def test_repository_docs_route_both_targets_without_promoting_runtime(self):
         root = BUNDLE.parents[1]
         requirements = {

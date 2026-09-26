@@ -27,6 +27,12 @@ Before `start`, establish all of the following:
 
 - Human-approved `FEATURE_SPEC.md` with scope, architecture boundaries,
   acceptance criteria, and exact runnable verification commands.
+  Require exact full lines `<!-- PCAOM_APPROVED: yes -->` and
+  `<!-- PCAOM_CONTEXT_TRANSFER: DeepSeek authorized -->`, plus the exact
+  `## Verification` heading followed by at least one
+  nonempty fenced `sh` or `bash` block. These are machine-readable preflight gates,
+  not substitutes for Human approval or data-transfer authorization.
+  If any required line, heading or fence is absent, fail before window creation.
 - An exact downstream workspace/worktree and explainable branch, diff, and
   existing Team state. Preserve existing work and identify lane ownership.
 - Explicit authorization covering the context and artifacts sent to DeepSeek.

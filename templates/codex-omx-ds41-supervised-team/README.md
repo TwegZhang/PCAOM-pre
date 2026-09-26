@@ -46,6 +46,26 @@ also validates the profile using `tomllib`. Runtime use also requires
 an approved Feature Spec, an authorized downstream workspace and permission to
 send its task context to DeepSeek.
 
+The approved `FEATURE_SPEC.md` must contain both comments below as exact full
+lines and the exact `## Verification` heading, followed by at least one
+nonempty fenced `sh` or `bash` block. Copy this fragment and replace the example
+command with the project's actual acceptance command:
+
+````markdown
+<!-- PCAOM_APPROVED: yes -->
+<!-- PCAOM_CONTEXT_TRANSFER: DeepSeek authorized -->
+
+## Verification
+```bash
+python3 -m unittest discover -s tests -v
+```
+````
+
+These markers are machine-readable preflight gates, not substitutes for Human
+approval or data-transfer authorization. Record them only after obtaining that
+approval and authorization. Missing exact markers, heading or nonempty shell
+fence makes start fail before window creation.
+
 Run these implemented installer commands from this complete bundle directory.
 Replace the example
 absolute paths with the intended project and Codex Home:

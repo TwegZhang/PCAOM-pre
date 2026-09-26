@@ -130,6 +130,20 @@ $code-review
 
 这是与第 4 节 Larry 命令并行的可选路径。Human + 官方 Codex 先形成并批准 `FEATURE_SPEC.md`，包含架构边界、验收与精确验证命令；明确授权发送给 DeepSeek 的项目上下文。按 [bundle README](../../templates/codex-omx-ds41-supervised-team/README.md) 安装并检查固定版本、Profile 与环境密钥。安装、静态测试不证明 provider 可运行；当前整体 `generated-unverified`，真实执行 `runtime-unverified`。
 
+Bridge 要求 `FEATURE_SPEC.md` 包含以下精确整行注释与 `## Verification` 标题，标题下至少有一个非空的 shell 代码块（nonempty fenced `sh` or `bash` block）。下面片段可复制；验证命令应替换为该项目 Spec 的实际验收命令：
+
+````markdown
+<!-- PCAOM_APPROVED: yes -->
+<!-- PCAOM_CONTEXT_TRANSFER: DeepSeek authorized -->
+
+## Verification
+```bash
+python3 -m unittest discover -s tests -v
+```
+````
+
+这些是 machine-readable preflight gates，不能替代 Human 审批或真实的数据外发授权；只有已取得相应授权才写入。缺少精确 marker、标题或非空 `sh`/`bash` fence 时，start 在创建 window 前失败。
+
 用户始终在 tmux 内的官方 Codex 调用下游 Skill（以下是 Codex 指令，不是 shell 命令）：
 
 ```text
