@@ -9,7 +9,8 @@ from pathlib import Path
 
 BUNDLE = Path(__file__).resolve().parents[1] / 'templates/codex-omx-ds41-supervised-team'
 BRIDGE = BUNDLE / 'project/.codex/skills/pcaom-ds41-team/scripts/supervisor-bridge.mjs'
-# Exact, intentionally synthetic contracts: no real OMX list/startup capability claim.
+# Synthetic process fixtures mirror pinned version output and tmux pane fields;
+# passing tests do not establish actual runtime/provider startup capability.
 # Spec requires these full-line markers and a nonempty sh/bash Verification fence.
 SPEC = '''<!-- PCAOM_APPROVED: yes -->
 <!-- PCAOM_CONTEXT_TRANSFER: DeepSeek authorized -->
@@ -34,13 +35,16 @@ scenario = os.environ.get('PCAOM_TEST_SCENARIO', '')
 with open(os.environ['PCAOM_TEST_CALL_LOG'], 'a') as f:
     f.write(json.dumps({'program':p,'args':a,'selected_env':{k:os.environ.get(k) for k in ['OMX_TEAM_WORKER_CLI','OMX_TEAM_WORKER_LAUNCH_ARGS']}})+'\n')
 if a in [['--version'], ['-V']]:
-    print('wrong' if scenario == p+'-version' else {'codex':'codex-cli 0.156.1','omx':'oh-my-codex 0.21.6','tmux':'tmux 3.7b'}[p])
+    if p == 'omx' and 'PCAOM_TEST_VERSION' in os.environ:
+        print(os.environ['PCAOM_TEST_VERSION'])
+    else:
+        print('wrong' if scenario == p+'-version' else {'codex':'codex-cli 0.156.1','omx':'oh-my-codex v0.21.6\nNode.js v22.22.2','tmux':'tmux 3.7b'}[p])
 elif p == 'omx':
-    print(json.dumps({'teams': [{'name':'other'}] if scenario == 'active' else []}))
+    sys.exit('Unexpected OMX runtime command during preflight')
 elif a[0] == 'list-panes':
-    print('$1\t@1\t%1\tsupervisor')
+    print('$1\t@1\t%1\tsupervisor\t0\tcodex')
     if (root/'created').exists():
-        print('$1\t'+('@9' if scenario == 'changed' else '@2')+'\t%2\tds41-team-demo')
+        print('$1\t'+('@9' if scenario == 'changed' else '@2')+'\t%2\tds41-team-demo\t'+('1' if scenario == 'dead' else '0')+'\t'+('zsh' if scenario == 'timeout' else 'codex'))
 elif a[0] == 'new-window':
     (root/'created').touch()
     print('$1\t@2\t%2')
@@ -57,7 +61,7 @@ elif a[0] == 'capture-pane':
         match = re.search(r'PCAOM_ACCEPTED:([a-f0-9-]+)',text)
         print('pending' if scenario == 'acceptance' else 'PCAOM_ACCEPTED:'+match[1])
     else:
-        print('pending' if scenario in ['timeout','changed'] else 'PCAOM_READY')
+        print('Fatal: startup failed' if scenario == 'fatal' else 'Codex interactive composer')
     print(os.environ.get('DEEPSEEK_API_KEY',''))
 '''
 
@@ -119,11 +123,38 @@ class BridgeTests(unittest.TestCase):
                 self.assertEqual(self.calls('new-window'), [])
             self.env[key] = old
 
-    def test_preflight_rejects_versions_and_active_team(self):
-        for scenario in ['tmux-version', 'codex-version', 'omx-version', 'active']:
+    def test_preflight_rejects_versions(self):
+        for scenario in ['tmux-version', 'codex-version', 'omx-version']:
             self.env['PCAOM_TEST_SCENARIO'] = scenario
             self.assertNotEqual(self.start()[0].returncode, 0)
             self.assertEqual(self.calls('new-window'), [])
+
+    def test_omx_exact_version_with_diagnostics(self):
+        for version in ['oh-my-codex 0.21.6\nNode.js v22.22.2', 'oh-my-codex v0.21.6\nNode.js v22.22.2']:
+            self.env['PCAOM_TEST_VERSION'] = version
+            self.profile.chmod(0)
+            result, data = self.start()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('readable', data['error'])
+        for version in ['oh-my-codex v0.21.7', 'oh-my-codex v0.21.6-beta', 'oh-my-codex vv0.21.6', 'junk\noh-my-codex v0.21.6', 'oh-my-codex v0.21.6\noh-my-codex v0.22.0']:
+            self.env['PCAOM_TEST_VERSION'] = version
+            self.assertIn('version', self.start()[1]['error'])
+
+    def test_preflight_exact_team_collision_without_runtime_commands(self):
+        state = self.project/'.omx/state/team/demo'
+        state.mkdir(parents=True)
+        self.assertNotEqual(self.start()[0].returncode, 0)
+        self.assertEqual(self.calls('new-window'), [])
+        self.assertEqual([c for c in self.calls() if c['program'] == 'omx' and c['args'] != ['--version']], [])
+
+    def test_dead_or_fatal_leader_never_receives_handoff(self):
+        for scenario in ['dead', 'fatal']:
+            with self.subTest(scenario=scenario):
+                self.env['PCAOM_TEST_SCENARIO'] = scenario
+                self.assertNotEqual(self.start()[0].returncode, 0)
+                self.assertEqual(self.calls('set-buffer'), [])
+                shutil.rmtree(self.project/'.omx')
+                (self.root/'created').unlink()
 
     def test_preflight_rejects_missing_files_and_unapproved_spec(self):
         for path in [self.profile, self.catalog, self.skill, self.spec]:
@@ -176,10 +207,15 @@ class BridgeTests(unittest.TestCase):
         self.assertIn('ds41-team-demo', create['args'])
         self.assertEqual(create['args'][-1], 'codex --profile pcaom-ds41')
         self.assertEqual(create['selected_env'], {'OMX_TEAM_WORKER_CLI':'codex','OMX_TEAM_WORKER_LAUNCH_ARGS':'--profile pcaom-ds41'})
+        before = self.calls()[:self.calls().index(create)]
+        for call in before:
+            self.assertIn((call['program'], call['args'][0]), [('codex','--version'), ('omx','--version'), ('tmux','-V'), ('tmux','list-panes')])
         calls = [c['args'] for c in self.calls()]
         set_args, = [a for a in calls if a[0] == 'set-buffer']
         self.assertEqual(set_args[:2], ['set-buffer','-b'])
         self.assertEqual(set_args[3], '--')
+        self.assertRegex(set_args[-1], r'After accepting this instruction, print this exact line: PCAOM_ACCEPTED:[a-f0-9-]+$')
+        self.assertNotIn('PCAOM_READY', set_args[-1])
         sequence = [set_args, ['show-buffer','-b',set_args[2]], ['send-keys','-t','%2','C-u'], ['paste-buffer','-t','%2','-b',set_args[2],'-p','-d'], ['send-keys','-t','%2','Enter']]
         indexes = [calls.index(a) for a in sequence]
         self.assertEqual(indexes, sorted(indexes))

@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// Experimental one-shot bridge. Fake contracts (not runtime capability evidence):
-// omx team list --json => {teams: []}; pane readiness => PCAOM_READY on a line;
-// accepted handoff => PCAOM_ACCEPTED:<nonce> on a line (never just echoed prompt).
+// Experimental one-shot bridge; fake CLI tests are not runtime capability evidence.
+// Pane identity/liveness precedes handoff; the prompt requests the nonce reply.
+// No unrelated active-Team discovery is asserted. Pinned OMX status invokes
+// activity recording/monitoring, and read-config may migrate state; neither is
+// a read-only preflight. Only filesystem collision evidence is consulted here.
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -67,10 +69,10 @@ function rootDirectory() {
   return root;
 }
 function panes() {
-  return run('tmux', ['list-panes', '-a', '-F', '#{session_id}\t#{window_id}\t#{pane_id}\t#{window_name}']).trim().split('\n').map(line => {
-    const [session, window_id, pane_id, name, extra] = line.split('\t');
-    requireThat(/^\$[0-9]+$/.test(session) && /^@[0-9]+$/.test(window_id) && /^%[0-9]+$/.test(pane_id) && name && extra === undefined, 'Malformed tmux identity');
-    return {session, window_id, pane_id, name};
+  return run('tmux', ['list-panes', '-a', '-F', '#{session_id}\t#{window_id}\t#{pane_id}\t#{window_name}\t#{pane_dead}\t#{pane_current_command}']).trim().split('\n').map(line => {
+    const [session, window_id, pane_id, name, dead, command, extra] = line.split('\t');
+    requireThat(/^\$[0-9]+$/.test(session) && /^@[0-9]+$/.test(window_id) && /^%[0-9]+$/.test(pane_id) && name && /^(0|1)$/.test(dead) && command && extra === undefined, 'Malformed tmux identity');
+    return {session, window_id, pane_id, name, dead, command};
   });
 }
 function assertExactIdentity(manifest) {
@@ -102,7 +104,12 @@ function preflight(root, options) {
   for (const key of ['TMUX', 'TMUX_PANE', 'CODEX_HOME', 'DEEPSEEK_API_KEY']) requireThat(process.env[key]?.trim(), `Missing ${key}`);
   requireThat(/^%[0-9]+$/.test(process.env.TMUX_PANE), 'Invalid supervisor pane');
   for (const [program, args, expected] of [['codex',['--version'],'codex-cli 0.156.1'], ['omx',['--version'],'oh-my-codex 0.21.6'], ['tmux',['-V'],'tmux 3.7b']]) {
-    requireThat(run(program,args).trim() === expected, `Exact ${program} version required: ${expected}`);
+    const output = run(program,args).trim();
+    const lines = output.split(/\r?\n/);
+    const matches = program === 'omx'
+      ? /^oh-my-codex v?0\.21\.6$/.test(lines[0]) && !lines.slice(1).some(line => line.includes('oh-my-codex'))
+      : output === expected;
+    requireThat(matches, `Exact ${program} version required: ${expected}`);
   }
   const profile = readRegular(path.join(process.env.CODEX_HOME, 'pcaom-ds41.config.toml'));
   for (const [key,value] of Object.entries({model:'deepseek-flash',model_provider:'deepseek',wire_api:'responses',env_key:'DEEPSEEK_API_KEY'})) {
@@ -126,15 +133,32 @@ function preflight(root, options) {
   const commands = verification?.match(/^```(?:sh|bash)\r?\n([\s\S]*?)^```\s*$/m)?.[1];
   requireThat(commands?.split(/\r?\n/).some(line => line.trim() && !line.trim().startsWith('#')), 'Executable verification command required');
   requireThat(!spec.includes(secret), 'Spec contains credential');
-  const status = JSON.parse(run('omx', ['team', 'list', '--json']));
-  requireThat(Array.isArray(status.teams) && status.teams.length === 0, 'Ambiguous active Team; list contract must prove none');
   return {specPath, spec};
 }
+function assertNoTeamCollision(root, team) {
+  // Pinned state-root.js resolves these overrides before <cwd>/.omx/state.
+  // Alternate roots require separately proven scope; never infer it here.
+  for (const key of ['OMX_TEAM_STATE_ROOT','OMX_ROOT','OMX_STATE_ROOT','OMX_TEAM_WORKER','OMX_TEAM_INTERNAL_WORKER']) {
+    requireThat(!process.env[key]?.trim(), `Ambiguous Team context: ${key}`);
+  }
+  const target = path.join(root,'.omx/state/team',team);
+  let current = root;
+  for (const part of ['.omx','state','team',team]) {
+    current = path.join(current,part);
+    let stat;
+    try { stat = fs.lstatSync(current); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
+    requireThat(stat.isDirectory() && !stat.isSymbolicLink(), 'Ambiguous Team state path');
+    requireThat(current !== target, 'Exact Team state collision');
+  }
+}
 function capture(pane, lines = 100) { return run('tmux', ['capture-pane','-p','-t',pane,'-S',`-${lines}`]); }
-function waitForLine(manifest, expected) {
+function waitForLeader(manifest, expected) {
   while (Date.now() < deadline) {
-    assertExactIdentity(manifest);
-    if (capture(manifest.leader_pane_id).split(/\r?\n/).includes(expected)) return;
+    const leader = assertExactIdentity(manifest).find(p => p.pane_id === manifest.leader_pane_id);
+    requireThat(leader.dead === '0', 'Leader pane exited');
+    const output = capture(manifest.leader_pane_id);
+    requireThat(!/^(?:fatal\b|error:|error loading|failed to (?:start|load)|.*process exited with code [1-9])/im.test(output), 'Fatal Leader startup output');
+    if (path.basename(leader.command) === 'codex' && (expected === undefined || output.split(/\r?\n/).includes(expected))) return;
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(50, Math.max(0, deadline-Date.now())));
   }
   throw new Error('Startup timeout or handoff acceptance unverified');
@@ -144,6 +168,7 @@ function start(root, options) {
   const specDigest = digest(spec);
   const stem = path.basename(specPath,path.extname(specPath)).toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,40) || 'feature';
   const team = options.team ?? `${stem}-${specDigest.slice(0,8)}`;
+  assertNoTeamCollision(root,team);
   const live = panes();
   const supervisor = live.filter(p => p.pane_id === process.env.TMUX_PANE);
   requireThat(supervisor.length === 1, 'Supervisor pane not uniquely live');
@@ -166,7 +191,7 @@ function start(root, options) {
     manifest.window_id = result[1]; manifest.leader_pane_id = result[2]; manifest.pane_ids = [result[2]];
     atomicWrite(manifestPath,JSON.stringify(manifest,null,2)+'\n'); published = true;
     deadline = Date.now()+options['startup-timeout-ms'];
-    waitForLine(manifest,'PCAOM_READY');
+    waitForLeader(manifest);
     const id = randomUUID();
     const buffer = `pcaom-${team}-${id}`;
     const handoff = `Read the approved context at ${contextPath} (SHA256 ${manifest.context_digest}). Own Ultragoal and explicitly start OMX Team ${team} with ${options.workers} workers. Preserve scope, constraints and verification commands. Do not delegate competing orchestration. After accepting this instruction, print this exact line: PCAOM_ACCEPTED:${id}`;
@@ -176,7 +201,7 @@ function start(root, options) {
     run('tmux',['send-keys','-t',manifest.leader_pane_id,'C-u']);
     run('tmux',['paste-buffer','-t',manifest.leader_pane_id,'-b',buffer,'-p','-d']);
     run('tmux',['send-keys','-t',manifest.leader_pane_id,'Enter']);
-    waitForLine(manifest,`PCAOM_ACCEPTED:${id}`);
+    waitForLeader(manifest,`PCAOM_ACCEPTED:${id}`);
     return manifest;
   } catch (error) {
     deadline = undefined;
