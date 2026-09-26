@@ -126,7 +126,9 @@ function prepareOperations(bundleRoot, manifest, options) {
   return operations.sort((a, b) => {
     const left = `${a.scope}\0${a.destination}`;
     const right = `${b.scope}\0${b.destination}`;
-    return left < right ? -1 : left > right ? 1 : 0;
+    if (left < right) return -1;
+    if (left > right) return 1;
+    return 0;
   });
 }
 

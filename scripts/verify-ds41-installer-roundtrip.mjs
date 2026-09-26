@@ -19,8 +19,9 @@ let cleanupFailure;
 
 function diagnostic(error) {
   if (error.safeDiagnostic) return { phase, check, ...error.safeDiagnostic };
-  const cause = error instanceof SyntaxError ? 'invalid_json'
-    : typeof error.code === 'string' && error.code !== 'ERR_ASSERTION' ? 'filesystem' : 'validation_failed';
+  let cause = 'validation_failed';
+  if (error instanceof SyntaxError) cause = 'invalid_json';
+  else if (typeof error.code === 'string' && error.code !== 'ERR_ASSERTION') cause = 'filesystem';
   return { phase, check, cause };
 }
 

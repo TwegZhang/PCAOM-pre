@@ -339,7 +339,7 @@ function start(root, options) {
   const specDigest = digest(spec);
   const stem = path.basename(specPath,path.extname(specPath)).toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,40) || 'feature';
   const team = options.team ?? `${stem}-${specDigest.slice(0,8)}`;
-  assertNoTeamCollision(root,team);
+  assertNoTeamCollision();
   const supervisorSession = run('tmux',['display-message','-p','-t',process.env.TMUX_PANE,'#{session_id}']).trim();
   const live = panes(supervisorSession);
   const supervisor = live.filter(p => p.pane_id === process.env.TMUX_PANE);
@@ -811,5 +811,9 @@ try {
   const {command,options} = parseArgs();
   stage = command === 'start' ? 'preflight' : command;
   const root = rootDirectory(command !== 'start');
-  emit(true,command,command === 'start' ? start(root,options) : command === 'inspect' ? inspect(root,options) : lifecycle(root,command,options));
+  let evidence;
+  if (command === 'start') evidence = start(root,options);
+  else if (command === 'inspect') evidence = inspect(root,options);
+  else evidence = lifecycle(root,command,options);
+  emit(true,command,evidence);
 } catch (error) { emit(false,undefined,{error:redact(error.message),code:error.code ?? 'BRIDGE_ERROR',stage:error.stage ?? stage,...(error.command_evidence ? {command_evidence:error.command_evidence}:{}),...(error.cleanup_diagnostics ? {cleanup_diagnostics:error.cleanup_diagnostics}:{})}); }
