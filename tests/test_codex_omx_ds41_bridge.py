@@ -35,6 +35,9 @@ scenario = os.environ.get('PCAOM_TEST_SCENARIO', '')
 with open(os.environ['PCAOM_TEST_CALL_LOG'], 'a') as f:
     f.write(json.dumps({'program':p,'args':a,'selected_env':{k:os.environ.get(k) for k in ['OMX_TEAM_WORKER_CLI','OMX_TEAM_WORKER_LAUNCH_ARGS']}})+'\n')
 if a in [['--version'], ['-V']]:
+    if scenario == 'delayed-version' and p == 'codex':
+        import time
+        time.sleep(2)
     if p == 'omx' and 'PCAOM_TEST_VERSION' in os.environ:
         print(os.environ['PCAOM_TEST_VERSION'])
     else:
@@ -42,24 +45,62 @@ if a in [['--version'], ['-V']]:
 elif p == 'omx':
     sys.exit('Unexpected OMX runtime command during preflight')
 elif a[0] == 'list-panes':
-    print('$1\t@1\t%1\tsupervisor\t0\tcodex')
+    generation = '\t/tmp/fake-tmux.sock\t'+('999' if scenario == 'restarted' or (scenario == 'restart-start' and (root/'created').exists()) else '123')+'\t1700000000'
+    print('$1\t@1\t%1\tsupervisor\t0\tcodex'+generation)
     if (root/'created').exists():
-        print('$1\t'+('@9' if scenario == 'changed' else '@2')+'\t%2\tds41-team-demo\t'+('1' if scenario == 'dead' else '0')+'\t'+('zsh' if scenario == 'timeout' else 'codex'))
+        print('$1\t'+('@9' if scenario == 'changed' or (scenario == 'identity-after-buffer' and (root/'buffer').exists()) else '@2')+'\t%2\tds41-team-demo\t'+('1' if scenario == 'dead' else '0')+'\t'+('zsh' if scenario == 'timeout' else 'codex')+generation)
+elif a[0] == 'show-environment':
+    if (root/'session-env.json').exists():
+        for key,value in json.loads((root/'session-env.json').read_text()).items():
+            print('-'+key if value is None else key+'='+value)
+    else: print('DEEPSEEK_API_KEY=previous-secret-sentinel\nCODEX_HOME=/previous/home\nPATH=/usr/bin:/bin' if scenario == 'previous-env' else '-DEEPSEEK_API_KEY')
+elif a[0] == '-C':
+    if scenario != 'import-fails':
+        (root/'session-env.json').write_text(json.dumps({k:os.environ.get(k) for k in ['DEEPSEEK_API_KEY','CODEX_HOME','PATH']}))
+elif a[0] == 'set-environment':
+    environment=json.loads((root/'session-env.json').read_text()) if (root/'session-env.json').exists() else {}
+    if '-u' in a: environment.pop(a[-1],None)
+    if '-r' in a: environment[a[-1]]=None
+    (root/'session-env.json').write_text(json.dumps(environment))
+elif a[0] == 'show-options':
+    if scenario == 'previous-env': print('update-environment[2] CUSTOM_VAR')
+elif a[0] == 'set-option' and scenario == 'option-fails':
+    sys.exit('cannot set import allowlist')
 elif a[0] == 'new-window':
     (root/'created').touch()
+    if (root/'session-env.json').exists():
+        (root/'leader-env.json').write_text((root/'session-env.json').read_text())
     print('$1\t@2\t%2')
 elif a[0] == 'set-buffer':
     (root/'buffer').write_text(a[-1])
 elif a[0] == 'show-buffer':
-    sys.stdout.write('wrong' if scenario == 'buffer' else (root/'buffer').read_text())
+    sys.stdout.write('wrong' if scenario in ['buffer','buffer-cleanup'] else (root/'buffer').read_text())
 elif a[0] == 'send-keys' and a[-1] == 'Enter':
     (root/'entered').touch()
+    if scenario == 'submit': sys.exit('submission failed')
+    if scenario in ['accepted','cleanup','bad-ack','previous-env','symlink-ack']:
+        import re
+        text=(root/'buffer').read_text()
+        ack_path=json.loads(re.search(r'^Acknowledgment path: (.+)$',text,re.M)[1])
+        ack=json.loads(re.search(r'^Acknowledgment JSON: (.+)$',text,re.M)[1])
+        if scenario == 'bad-ack': ack['team']='wrong'
+        temporary=pathlib.Path(ack_path+'.tmp')
+        temporary.write_text(json.dumps(ack))
+        temporary.chmod(0o600)
+        if scenario == 'symlink-ack': pathlib.Path(ack_path).symlink_to(temporary)
+        else:
+            os.link(temporary,ack_path)
+            temporary.unlink()
+elif a[0] == 'paste-buffer' and scenario == 'paste':
+    sys.exit('paste failed')
+elif a[0] == 'delete-buffer':
+    if scenario in ['cleanup','buffer-cleanup']: sys.exit('buffer cleanup failed')
+    (root/'buffer').unlink(missing_ok=True)
 elif a[0] == 'capture-pane':
     if (root/'entered').exists():
-        text = (root/'buffer').read_text()
+        text = (root/'buffer').read_text() if (root/'buffer').exists() else ''
         import re
-        match = re.search(r'PCAOM_ACCEPTED:([a-f0-9-]+)',text)
-        print('pending' if scenario == 'acceptance' else 'PCAOM_ACCEPTED:'+match[1])
+        print(text if scenario == 'echo' else 'Leader processing')
     else:
         print('Fatal: startup failed' if scenario == 'fatal' else 'Codex interactive composer')
     print(os.environ.get('DEEPSEEK_API_KEY',''))
@@ -76,7 +117,8 @@ class BridgeTests(unittest.TestCase):
         subprocess.run(['git', 'init', '-q', str(self.project)], check=True)
         self.home = self.root / 'home'
         self.home.mkdir()
-        self.catalog = self.home / 'catalog.json'
+        self.catalog = self.home / 'model-catalogs/pcaom-deepseek-models.json'
+        self.catalog.parent.mkdir()
         shutil.copyfile(BUNDLE / 'codex/deepseek-models.json', self.catalog)
         self.profile = self.home / 'pcaom-ds41.config.toml'
         self.profile.write_text((BUNDLE / 'codex/pcaom-ds41.config.toml').read_text().replace('__PCAOM_MODEL_CATALOG_PATH__', str(self.catalog)))
@@ -95,12 +137,14 @@ class BridgeTests(unittest.TestCase):
         self.env = dict(os.environ, PATH=str(bin_dir)+os.pathsep+os.environ['PATH'],
                         TMUX='synthetic,1,0', TMUX_PANE='%1', CODEX_HOME=str(self.home),
                         DEEPSEEK_API_KEY='secret-sentinel-never-log',
+                        PCAOM_TEST_SCENARIO='accepted',
                         PCAOM_TEST_CALL_LOG=str(self.log), PCAOM_TEST_ROOT=str(self.root))
 
     def invoke(self, *args):
         result = subprocess.run(['node', str(BRIDGE), *args], cwd=self.project,
                                 env=self.env, capture_output=True, text=True)
         self.assertNotIn('secret-sentinel-never-log', result.stdout+result.stderr+(self.log.read_text() if self.log.exists() else ''))
+        self.assertNotIn('previous-secret-sentinel', result.stdout+result.stderr+(self.log.read_text() if self.log.exists() else ''))
         stream = result.stdout if result.returncode == 0 else result.stderr
         self.assertEqual(len(stream.splitlines()), 1, stream)
         self.assertEqual(result.stderr if result.returncode == 0 else result.stdout, '')
@@ -109,7 +153,8 @@ class BridgeTests(unittest.TestCase):
         return result, data
 
     def start(self):
-        return self.invoke('start', '--spec', str(self.spec), '--workers', '2', '--team', 'demo', '--startup-timeout-ms', '350')
+        timeout = '350' if self.env.get('PCAOM_TEST_SCENARIO') in ['timeout','acceptance','echo'] else '5000'
+        return self.invoke('start', '--spec', str(self.spec), '--workers', '2', '--team', 'demo', '--startup-timeout-ms', timeout)
 
     def calls(self, command=None):
         calls = [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
@@ -153,8 +198,12 @@ class BridgeTests(unittest.TestCase):
                 self.env['PCAOM_TEST_SCENARIO'] = scenario
                 self.assertNotEqual(self.start()[0].returncode, 0)
                 self.assertEqual(self.calls('set-buffer'), [])
-                shutil.rmtree(self.project/'.omx')
-                (self.root/'created').unlink()
+                self.assertEqual(self.start_stage(), 'readiness')
+                if (self.project/'.omx').exists(): shutil.rmtree(self.project/'.omx')
+                (self.root/'created').unlink(missing_ok=True)
+
+    def start_stage(self):
+        return json.loads((self.project/'.omx/pcaom-supervisor/demo/run.json').read_text())['failure_stage']
 
     def test_preflight_rejects_missing_files_and_unapproved_spec(self):
         for path in [self.profile, self.catalog, self.skill, self.spec]:
@@ -209,19 +258,21 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(create['selected_env'], {'OMX_TEAM_WORKER_CLI':'codex','OMX_TEAM_WORKER_LAUNCH_ARGS':'--profile pcaom-ds41'})
         before = self.calls()[:self.calls().index(create)]
         for call in before:
-            self.assertIn((call['program'], call['args'][0]), [('codex','--version'), ('omx','--version'), ('tmux','-V'), ('tmux','list-panes')])
+            self.assertIn((call['program'], call['args'][0]), [('codex','--version'), ('omx','--version'), ('tmux','-V'), ('tmux','list-panes'), ('tmux','show-environment'), ('tmux','show-options'), ('tmux','set-option'), ('tmux','-C')])
         calls = [c['args'] for c in self.calls()]
         set_args, = [a for a in calls if a[0] == 'set-buffer']
         self.assertEqual(set_args[:2], ['set-buffer','-b'])
         self.assertEqual(set_args[3], '--')
-        self.assertRegex(set_args[-1], r'After accepting this instruction, print this exact line: PCAOM_ACCEPTED:[a-f0-9-]+$')
+        self.assertIn('Before fan-out or work, atomically create', set_args[-1])
         self.assertNotIn('PCAOM_READY', set_args[-1])
         sequence = [set_args, ['show-buffer','-b',set_args[2]], ['send-keys','-t','%2','C-u'], ['paste-buffer','-t','%2','-b',set_args[2],'-p','-d'], ['send-keys','-t','%2','Enter']]
         indexes = [calls.index(a) for a in sequence]
         self.assertEqual(indexes, sorted(indexes))
+        self.assertEqual(self.calls('delete-buffer')[-1]['args'],['delete-buffer','-b',set_args[2]])
+        self.assertFalse((self.root/'buffer').exists())
         manifest_path = self.project/'.omx/pcaom-supervisor/demo/run.json'
         manifest = json.loads(manifest_path.read_text())
-        for key, value in {'schema_version':1,'team':'demo','session':'$1','window_id':'@2','leader_pane_id':'%2','supervisor_pane_id':'%1','profile':'pcaom-ds41','state':'starting'}.items():
+        for key, value in {'schema_version':1,'team':'demo','session':'$1','window_id':'@2','leader_pane_id':'%2','supervisor_pane_id':'%1','profile':'pcaom-ds41','state':'accepted'}.items():
             self.assertEqual(manifest[key],value)
         context = Path(manifest['context_path'])
         self.assertEqual(manifest['context_digest'], hashlib.sha256(context.read_bytes()).hexdigest())
@@ -232,6 +283,118 @@ class BridgeTests(unittest.TestCase):
             self.assertNotIn(self.env['DEEPSEEK_API_KEY'],path.read_text())
         self.assertNotEqual(self.start()[0].returncode,0)
         self.assertEqual(len(self.calls('new-window')),1)
+
+    def test_launch_environment_and_server_generation(self):
+        result, data = self.start()
+        self.assertEqual(result.returncode, 0, data)
+        leader = json.loads((self.root/'leader-env.json').read_text())
+        for key in ['DEEPSEEK_API_KEY','CODEX_HOME','PATH']:
+            self.assertEqual(leader[key],self.env[key])
+        manifest = json.loads((self.project/'.omx/pcaom-supervisor/demo/run.json').read_text())
+        self.assertEqual(manifest['server'], {'socket_path':'/tmp/fake-tmux.sock','pid':'123','start_time':'1700000000'})
+        self.env['PCAOM_TEST_SCENARIO']='restarted'
+        count=len(self.calls('capture-pane'))
+        result,data=self.invoke('inspect','--team','demo','--pane','leader')
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('generation',data['error'])
+        self.assertEqual(len(self.calls('capture-pane')),count)
+
+    def test_import_must_be_verified_before_window_creation(self):
+        self.env['PCAOM_TEST_SCENARIO']='import-fails'
+        result,data=self.start()
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual(data['stage'],'launch')
+        self.assertEqual(self.calls('new-window'),[])
+
+    def test_failed_allowlist_never_attaches_with_unrestricted_environment(self):
+        self.env['PCAOM_TEST_SCENARIO']='option-fails'
+        result,data=self.start()
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual(data['stage'],'launch')
+        self.assertEqual(data['code'],'COMMAND_FAILED')
+        self.assertEqual(self.calls('-C'),[])
+        self.assertEqual(self.calls('new-window'),[])
+
+    def test_prompt_echo_cannot_acknowledge(self):
+        self.env['PCAOM_TEST_SCENARIO']='echo'
+        result,data=self.start()
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual(data['stage'],'acceptance')
+        self.assertFalse((self.project/'.omx/pcaom-supervisor/demo/leader-accepted.json').exists())
+
+    def test_wrong_ack_rejected(self):
+        self.env['PCAOM_TEST_SCENARIO']='bad-ack'
+        result,data=self.start()
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual(data['stage'],'acceptance')
+
+    def test_symlink_ack_rejected(self):
+        self.env['PCAOM_TEST_SCENARIO']='symlink-ack'
+        result,data=self.start()
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual(data['stage'],'acceptance')
+        self.assertIn('symlinks',data['error'])
+
+    def test_previous_session_environment_and_local_option_restored(self):
+        self.env['PCAOM_TEST_SCENARIO']='previous-env'
+        result,data=self.start()
+        self.assertEqual(result.returncode,0,data)
+        self.assertEqual(json.loads((self.root/'session-env.json').read_text()), {'DEEPSEEK_API_KEY':'previous-secret-sentinel','CODEX_HOME':'/previous/home','PATH':'/usr/bin:/bin'})
+        self.assertEqual(self.calls('set-option')[-1]['args'],['set-option','-t','$1','update-environment[2]','CUSTOM_VAR'])
+
+    def test_named_buffer_cleanup_on_failure(self):
+        for scenario in ['buffer','paste','submit','identity-after-buffer']:
+            with self.subTest(scenario=scenario):
+                self.env['PCAOM_TEST_SCENARIO']=scenario
+                result,data=self.start()
+                self.assertNotEqual(result.returncode,0)
+                self.assertEqual(data['stage'],'handoff')
+                self.assertEqual(len(self.calls('delete-buffer')),1)
+                self.assertFalse((self.root/'buffer').exists())
+                if (self.project/'.omx').exists(): shutil.rmtree(self.project/'.omx')
+                for filename in ['created','entered','calls.jsonl']:
+                    (self.root/filename).unlink(missing_ok=True)
+
+    def test_delayed_version_reports_preflight_timeout(self):
+        self.env['PCAOM_TEST_SCENARIO']='delayed-version'
+        result,data=self.start()
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual(data['stage'],'preflight')
+        self.assertEqual(data['code'],'COMMAND_TIMEOUT')
+        self.assertIn('ETIMEDOUT',data['error'])
+        self.assertEqual(self.calls('new-window'),[])
+
+    def test_restarted_server_never_captured_or_killed_on_start_failure(self):
+        self.env['PCAOM_TEST_SCENARIO']='restart-start'
+        result,data=self.start()
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual(data['stage'],'launch')
+        self.assertIn('generation',data['error'])
+        self.assertEqual(self.calls('capture-pane'),[])
+        self.assertEqual(self.calls('kill-window'),[])
+
+    def test_cleanup_failure_is_reported(self):
+        self.env['PCAOM_TEST_SCENARIO']='cleanup'
+        result,data=self.start()
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('Named buffer cleanup failed',data['error'])
+
+    def test_cleanup_failure_preserves_primary_failure(self):
+        self.env['PCAOM_TEST_SCENARIO']='buffer-cleanup'
+        result,data=self.start()
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual(data['stage'],'handoff')
+        self.assertIn('read-back mismatch',data['error'])
+        self.assertIn('Named buffer cleanup failed',data['error'])
+
+    def test_profile_rejects_endpoint_sections_duplicates_and_provider(self):
+        original=self.profile.read_text()
+        for altered in [original.replace('https://api.deepseek.com/','https://unauthorized.example/'), original+'\nmodel = "deepseek-flash"\n', original.replace('[model_providers.deepseek]','[model_providers.other]'), original.replace('model_provider = "deepseek"','model_provider = "other"'), original+'\n[model_providers.other]\nname = "Other"\n', original.replace('forced_login_method = "api"','forced_login_method = "chatgpt"')]:
+            self.profile.write_text(altered)
+            result,data=self.start()
+            self.assertNotEqual(result.returncode,0)
+            self.assertEqual(data['stage'],'preflight')
+            self.assertEqual(self.calls('new-window'),[])
 
     def test_timeout_rolls_back_only_proven_window(self):
         self.env['PCAOM_TEST_SCENARIO']='timeout'
