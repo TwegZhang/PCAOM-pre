@@ -1,4 +1,4 @@
-import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -114,7 +114,7 @@ function prepareOperations(bundleRoot, manifest, options) {
     requireValid(!destinations.has(destination), "Duplicate destination");
     sources.add(sourcePath);
     destinations.add(destination);
-    const bytes = renderSource(sourcePath, options);
+    const bytes = options.command === "install" ? renderSource(sourcePath, options) : Buffer.alloc(0);
     return { scope: file.scope, source: file.source, destination, digest: sha256(bytes), bytes };
   });
   for (const destination of destinations) {
@@ -145,27 +145,230 @@ function atomicWrite(destination, bytes) {
   }
 }
 
+const NAME = "codex-omx-ds41-supervised-team";
 const written = [];
+const rollbackProblems = [];
+
+function existingBytes(root, destination) {
+  validateDestination(root, destination);
+  try { return readFileSync(destination); }
+  catch (error) { if (error.code === "ENOENT") return null; throw error; }
+}
+
+function sameBytes(left, right) {
+  return left === null ? right === null : right !== null && left.equals(right);
+}
+
+function bundleDigest(files) {
+  return sha256(JSON.stringify(files));
+}
+
+function loadReceipt(receipts, options, files) {
+  const [left, right] = receipts.map((op) => {
+    op.before = existingBytes(op.root, op.destination);
+    return op.before;
+  });
+  if (left === null && right === null) {
+    requireValid(options.command === "install", "Missing ownership receipts");
+    return null;
+  }
+  requireValid(left !== null && right !== null && left.equals(right), "Ownership receipts differ or are missing");
+  const receipt = JSON.parse(left);
+  requireValid(receipt?.schema_version === 0 && receipt.owner === OWNER &&
+    receipt.project_root === options.projectRoot && receipt.codex_home === options.codexHome,
+  "Receipt identity mismatch");
+  requireValid(Array.isArray(receipt.files) && receipt.files.length === files.length, "Receipt file set mismatch");
+  for (let index = 0; index < files.length; index += 1) {
+    const record = receipt.files[index];
+    requireValid(record && Object.keys(record).sort().join() === "destination,scope,sha256" &&
+      record.scope === files[index].scope && record.destination === files[index].destination &&
+      typeof record.sha256 === "string" && /^[a-f0-9]{64}$/.test(record.sha256), "Invalid receipt file record");
+  }
+  requireValid(receipt.bundle_digest === bundleDigest(receipt.files), "Receipt bundle digest mismatch");
+  return receipt;
+}
+
+// Freeze file bytes and ancestor identities, then recheck them at each mutation.
+// This detects replacement between validation and use without granting ownership
+// to a lone receipt, a matching filename, or a changed directory.
+function transaction(actions, verify) {
+  const identities = new Map();
+  const snapshots = new Map();
+  const createdDirectories = new Set();
+  const identity = (path) => {
+    try {
+      const stats = lstatSync(path);
+      requireValid(!stats.isSymbolicLink(), "Operation path contains a symlink");
+      return `${stats.dev}:${stats.ino}`;
+    } catch (error) { if (error.code === "ENOENT") return null; throw error; }
+  };
+  for (const action of actions) {
+    snapshots.set(action.destination, action.before);
+    let path = action.destination;
+    while (true) {
+      identities.set(path, action.identities.get(path));
+      if (path === action.root) break;
+      path = dirname(path);
+    }
+  }
+  const revalidate = () => {
+    for (const [path, expected] of identities) requireValid(identity(path) === expected, `Identity changed: ${path}`);
+    for (const action of actions) requireValid(sameBytes(existingBytes(action.root, action.destination),
+      snapshots.get(action.destination)), `Content changed: ${action.destination}`);
+  };
+  const touched = [];
+  try {
+    revalidate();
+    for (const action of actions) {
+      revalidate();
+      if (action.action === "receipt") verify();
+      const before = snapshots.get(action.destination);
+      if (action.action !== "delete" && sameBytes(before, action.bytes)) continue;
+      touched.push({ ...action, before });
+      for (let path = dirname(action.destination); path !== action.root; path = dirname(path)) {
+        if (identity(path) === null) createdDirectories.add(path);
+      }
+      if (action.action === "delete") unlinkSync(action.destination);
+      else atomicWrite(action.destination, action.bytes);
+      written.push(action.destination);
+      snapshots.set(action.destination, action.action === "delete" ? null : action.bytes);
+      for (let path = action.destination; path !== action.root; path = dirname(path)) identities.set(path, identity(path));
+      requireValid(sameBytes(existingBytes(action.root, action.destination), snapshots.get(action.destination)),
+        `Write verification failed: ${action.destination}`);
+    }
+    verify();
+    if (actions.every((action) => action.action === "delete")) {
+      revalidate();
+      for (const action of actions) {
+        try { removeEmptyParents(action.root, action.destination); }
+        finally {
+          for (let path = dirname(action.destination); path !== action.root; path = dirname(path)) {
+            if (identity(path) === null) identities.set(path, null);
+          }
+        }
+      }
+    }
+  } catch (error) {
+    for (const action of touched.reverse()) {
+      try {
+        validateDestination(action.root, action.destination);
+        for (let path = dirname(action.destination); ; path = dirname(path)) {
+          const expected = identities.get(path);
+          requireValid(expected === null || identity(path) === expected, `Rollback identity changed: ${path}`);
+          if (path === action.root) break;
+        }
+        if (action.before === null) {
+          if (existingBytes(action.root, action.destination) !== null) unlinkSync(action.destination);
+        } else atomicWrite(action.destination, action.before);
+        requireValid(sameBytes(existingBytes(action.root, action.destination), action.before), "Rollback verification failed");
+      } catch { rollbackProblems.push(action.destination); }
+    }
+    for (const path of [...createdDirectories].sort((a, b) => b.length - a.length)) {
+      try { rmdirSync(path); } catch (cleanupError) {
+        if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes(cleanupError.code)) rollbackProblems.push(path);
+      }
+    }
+    throw error;
+  }
+}
+
+function freezeIdentities(action) {
+  action.identities = new Map();
+  for (let path = action.destination; ; path = dirname(path)) {
+    try {
+      const stats = lstatSync(path);
+      requireValid(!stats.isSymbolicLink(), "Operation path contains a symlink");
+      action.identities.set(path, `${stats.dev}:${stats.ino}`);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      action.identities.set(path, null);
+    }
+    if (path === action.root) break;
+  }
+}
+
+function emit(stream, data) {
+  const key = process.env.DEEPSEEK_API_KEY;
+  stream.write(`${JSON.stringify(data, (_name, value) =>
+    key && typeof value === "string" ? value.split(key).join("[REDACTED]") : value)}\n`);
+}
+
+function removeEmptyParents(root, destination) {
+  for (let path = dirname(destination); path !== root; path = dirname(path)) {
+    try {
+      requireValid(!lstatSync(path).isSymbolicLink(), "Cleanup path contains symlink");
+      rmdirSync(path);
+    } catch (error) {
+      if (["ENOENT", "ENOTEMPTY", "EEXIST"].includes(error.code)) break;
+      throw error;
+    }
+  }
+}
+
 try {
   const options = parseArgs(process.argv.slice(2));
   const bundleRoot = realpathSync(dirname(fileURLToPath(import.meta.url)));
   const manifest = readManifest(bundleRoot);
   const operations = prepareOperations(bundleRoot, manifest, options);
-  requireValid(options.command === "install", "Uninstall is not yet supported");
-  if (!options.dryRun) {
-    for (const operation of operations) {
-      atomicWrite(operation.destination, operation.bytes);
-      written.push(operation.destination);
-      const actual = readFileSync(operation.destination);
-      requireValid(actual.equals(operation.bytes) && sha256(actual) === operation.digest, "Installed content verification failed");
+  const files = operations.map((op) => ({ scope: op.scope,
+    destination: relative(destinationRoot(op.scope, options), op.destination), sha256: op.digest }));
+  const receipts = [
+    { root: options.projectRoot, destination: resolve(options.projectRoot, `.pcaom/installations/${NAME}.json`) },
+    { root: options.codexHome, destination: resolve(options.codexHome, `pcaom-installations/${NAME}.json`) },
+  ];
+  const old = loadReceipt(receipts, options, files);
+  for (const [index, operation] of operations.entries()) {
+    const bytes = existingBytes(destinationRoot(operation.scope, options), operation.destination);
+    requireValid(old ? bytes !== null && sha256(bytes) === old.files[index].sha256 : bytes === null,
+      `Unmanaged or modified destination: ${operation.destination}`);
+    operation.before = bytes;
+    if (options.command === "uninstall") operation.digest = sha256(bytes);
+  }
+  const receiptBytes = Buffer.from(`${JSON.stringify({ schema_version: 0, owner: OWNER,
+    project_root: options.projectRoot, codex_home: options.codexHome,
+    bundle_digest: bundleDigest(files), files }, null, 2)}\n`);
+  const actions = [];
+  if (options.command === "install" && old && old.bundle_digest !== bundleDigest(files)) {
+    for (const [index, operation] of operations.entries()) {
+      const root = destinationRoot(operation.scope, options);
+      const prefix = operation.scope === "project" ? ".pcaom/backups" : "pcaom-backups";
+      const destination = scopedPath(root, `${prefix}/${NAME}/${old.bundle_digest}/${files[index].destination}`);
+      const bytes = operation.before;
+      const backup = existingBytes(root, destination);
+      requireValid(backup === null || backup.equals(bytes), `Conflicting backup: ${destination}`);
+      actions.push({ action: "backup", root, destination, bytes, before: backup });
     }
   }
-  process.stdout.write(`${JSON.stringify({ ok: true, command: options.command, dryRun: options.dryRun,
-    operations: operations.map(({ bytes, ...operation }) => operation) })}\n`);
+  actions.push(...operations.map((op) => ({ action: options.command === "install" ? "write" : "delete",
+    root: destinationRoot(op.scope, options), destination: op.destination, bytes: op.bytes, before: op.before })));
+  actions.push(...receipts.map((op) => ({ ...op, action: options.command === "install" ? "receipt" : "delete", bytes: receiptBytes })));
+  const paths = actions.map((op) => op.destination);
+  requireValid(new Set(paths).size === paths.length && paths.every((path) => paths.every((other) =>
+    path === other || !withinRoot(path, other))), "Overlapping operation paths");
+  const verify = () => {
+    if (options.command !== "install") return;
+    for (const operation of operations) {
+      const actual = readFileSync(operation.destination);
+      requireValid(actual.equals(operation.bytes) && sha256(actual) === operation.digest, "Installed content verification failed");
+      if (operation.destination.endsWith(".json")) JSON.parse(actual);
+      if (operation.destination.endsWith("pcaom-ds41.config.toml")) {
+        const text = actual.toString("utf8");
+        const catalog = JSON.stringify(resolve(options.codexHome, "model-catalogs/pcaom-deepseek-models.json")).replaceAll("\u007f", "\\u007f");
+        requireValid(!text.includes(MARKER) && text.includes(`model_catalog_json = ${catalog}`), "Invalid rendered catalog path");
+      }
+    }
+  };
+  if (!options.dryRun) {
+    actions.forEach(freezeIdentities);
+    transaction(actions, verify);
+  }
+  emit(process.stdout, { ok: true, command: options.command, dryRun: options.dryRun,
+    operations: operations.map(({ bytes, before, ...operation }) => operation),
+    actions: actions.map(({ action, destination }) => ({ action, destination })) });
 } catch (error) {
   // OS and JSON parser messages can contain user content; emit only fixed diagnostics or codes.
-  const reason = error.code || (error instanceof SyntaxError ? "Invalid manifest JSON" : error.message);
-  process.stderr.write(`${JSON.stringify({ ok: false, error: written.length ? "partial-install" : "validation-or-install-failed",
-    reason, written })}\n`);
+  const reason = error.code || (error instanceof SyntaxError ? "Invalid JSON" : error.message);
+  emit(process.stderr, { ok: false, error: rollbackProblems.length ? "rollback-failed" : "validation-or-operation-failed",
+    reason, written, rollbackProblems });
   process.exitCode = 1;
 }

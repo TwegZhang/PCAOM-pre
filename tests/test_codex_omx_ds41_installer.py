@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -89,7 +90,7 @@ class CodexOmxDs41InstallerTests(unittest.TestCase):
             self.assertEqual(destination.read_bytes(), source)
             self.assertEqual(destination.stat().st_mode & 0o777, 0o600)
         actual = [p for root in (self.project, self.codex_home) for p in root.rglob("*") if p.is_file()]
-        self.assertEqual(set(actual), set(expected))
+        self.assertEqual(set(actual), set(expected + self.receipts()))
         self.assertEqual((self.bundle / "codex/pcaom-ds41.config.toml").read_bytes(), original)
         json.loads((self.codex_home / "model-catalogs/pcaom-deepseek-models.json").read_text())
         for op in data["operations"]:
@@ -150,6 +151,218 @@ class CodexOmxDs41InstallerTests(unittest.TestCase):
         source.symlink_to(self.manifest_path.parent.parent / "outside")
         (self.root / "outside").write_text("outside")
         self.assert_failure(self.run_installer(*self.args()))
+
+    def receipts(self):
+        return [self.project / '.pcaom/installations/codex-omx-ds41-supervised-team.json',
+                self.codex_home / 'pcaom-installations/codex-omx-ds41-supervised-team.json']
+
+    def snapshot(self):
+        return {str(p): p.read_bytes() for root in (self.project, self.codex_home)
+                for p in root.rglob('*') if p.is_file()}
+
+    def install_ok(self):
+        result = self.run_installer(*self.args())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result
+
+    def fails_unchanged(self, *args):
+        before = self.snapshot()
+        result = self.run_installer(*args)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(result.stdout, '')
+        self.assertFalse(json.loads(result.stderr)['ok'])
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse(list(self.root.rglob('*.tmp')))
+
+    def test_unmanaged_collision_preserves_everything(self):
+        target = self.codex_home / 'pcaom-ds41.config.toml'
+        target.write_text('user owned')
+        self.fails_unchanged(*self.args())
+
+    def test_identical_install_has_deterministic_receipts(self):
+        self.install_ok()
+        left, right = self.receipts()
+        self.assertTrue(left.exists() and right.exists(), 'both ownership receipts required')
+        self.assertEqual(left.read_bytes(), right.read_bytes())
+        receipt = json.loads(left.read_bytes())
+        self.assertEqual(receipt['schema_version'], 0)
+        self.assertEqual(receipt['owner'], self.manifest['owner'])
+        self.assertEqual(receipt['project_root'], str(self.project))
+        self.assertEqual(receipt['codex_home'], str(self.codex_home))
+        self.assertRegex(receipt['bundle_digest'], '^[0-9a-f]{64}$')
+        self.assertEqual(receipt['files'], sorted(receipt['files'], key=lambda f: (f['scope'], f['destination'])))
+        before = self.snapshot()
+        self.install_ok()
+        self.assertEqual(before, self.snapshot())
+
+    def test_invalid_receipts_fail_closed(self):
+        self.install_ok()
+        self.assertTrue(all(p.exists() for p in self.receipts()), 'receipts required')
+        original = self.receipts()[0].read_bytes()
+        mutations = [lambda r: r.update(owner='other'), lambda r: r.update(project_root='/other'),
+                     lambda r: r.update(codex_home='/other'), lambda r: r.update(files=[]),
+                     lambda r: r.update(bundle_digest='0' * 64),
+                     lambda r: r['files'][0].update(sha256='0' * 64)]
+        for mutate in mutations:
+            receipt = json.loads(original)
+            mutate(receipt)
+            for p in self.receipts():
+                p.write_text(json.dumps(receipt))
+            self.fails_unchanged(*self.args())
+            self.fails_unchanged('uninstall', *self.args()[1:])
+        for p in self.receipts():
+            p.write_bytes(original)
+        for invalid in (None, b'invalid', original + b' '):
+            p = self.receipts()[0]
+            if invalid is None:
+                p.unlink()
+            else:
+                p.write_bytes(invalid)
+            self.fails_unchanged(*self.args())
+            self.fails_unchanged('uninstall', *self.args()[1:])
+            p.write_bytes(original)
+
+    def test_upgrade_backs_up_verified_prior_bytes(self):
+        self.install_ok()
+        self.assertTrue(self.receipts()[0].exists(), 'receipt required for upgrade')
+        old = json.loads(self.receipts()[0].read_bytes())
+        before = self.snapshot()
+        source = self.bundle / self.manifest['files'][-1]['source']
+        source.write_bytes(source.read_bytes() + b'\n// upgraded\n')
+        dry_run = self.run_installer(*self.args(), '--dry-run')
+        self.assertEqual(dry_run.returncode, 0, dry_run.stderr)
+        self.assertEqual(len([a for a in json.loads(dry_run.stdout)['actions'] if a['action'] == 'backup']), 4)
+        self.assertEqual(self.snapshot(), before)
+        self.install_ok()
+        backups = {}
+        for record in old['files']:
+            root = self.project if record['scope'] == 'project' else self.codex_home
+            prefix = '.pcaom/backups' if record['scope'] == 'project' else 'pcaom-backups'
+            backup = root / prefix / 'codex-omx-ds41-supervised-team' / old['bundle_digest'] / record['destination']
+            self.assertEqual(backup.read_bytes(), before[str(root / record['destination'])])
+            backups[str(backup)] = backup.read_bytes()
+        result = self.run_installer('uninstall', *self.args()[1:])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.snapshot(), backups)
+
+    def test_modified_file_blocks_uninstall_and_install(self):
+        self.install_ok()
+        (self.codex_home / 'pcaom-ds41.config.toml').write_text('modified')
+        self.fails_unchanged(*self.args())
+        self.fails_unchanged('uninstall', *self.args()[1:])
+
+    def test_uninstall_removes_only_owned_files(self):
+        self.install_ok()
+        unrelated = self.project / '.codex/skills/unrelated.txt'
+        unrelated.write_text('keep')
+        result = self.run_installer('uninstall', *self.args()[1:])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.snapshot(), {str(unrelated): b'keep'})
+
+    def inject(self, before, after):
+        script = self.bundle / 'install.mjs'
+        text = script.read_text()
+        self.assertIn(before, text)
+        script.write_text(text.replace(before, after, 1))
+
+    def test_install_readback_failure_rolls_back(self):
+        self.inject('const actual = readFileSync(operation.destination);',
+                    'const actual = Buffer.from("injected mismatch");')
+        self.fails_unchanged(*self.args())
+        self.assert_empty()
+
+    def test_uninstall_fault_rolls_back(self):
+        self.install_ok()
+        # Inject at filesystem boundary, after one successful delete.
+        script = self.bundle / 'install.mjs'
+        script.write_text(script.read_text().replace('unlinkSync,', 'unlinkSync as realUnlinkSync,', 1)
+                          + '\n')
+        self.inject('const OWNER =', 'let deletes = 0; function unlinkSync(p) { realUnlinkSync(p); if (!p.endsWith(".tmp") && ++deletes === 1) throw new Error("injected delete fault"); }\nconst OWNER =')
+        self.fails_unchanged('uninstall', *self.args()[1:])
+        self.assertTrue(all(p.exists() for p in self.receipts()), 'rollback retains receipts')
+
+    def test_dry_run_reports_receipts_backups_and_deletes(self):
+        result = self.run_installer(*self.args(), '--dry-run')
+        data = json.loads(result.stdout)
+        self.assertIn('actions', data)
+        self.assertEqual(len([a for a in data['actions'] if a['action'] == 'receipt']), 2)
+        self.assert_empty()
+        self.install_ok()
+        before = self.snapshot()
+        result = self.run_installer('uninstall', *self.args()[1:], '--dry-run')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(json.loads(result.stdout)['actions']), 6)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_receipt_write_failure_restores_upgrade_and_backups(self):
+        self.install_ok()
+        source = self.bundle / self.manifest['files'][-1]['source']
+        source.write_bytes(source.read_bytes() + b'\n// next version\n')
+        self.inject('renameSync(temporary, destination);',
+                    'renameSync(temporary, destination); if (destination.includes("pcaom-installations")) throw new Error("receipt fault");')
+        self.fails_unchanged(*self.args())
+
+    def test_conflicting_backup_fails_before_replacement(self):
+        self.install_ok()
+        old = json.loads(self.receipts()[0].read_bytes())
+        record = old['files'][0]
+        backup = self.codex_home / 'pcaom-backups/codex-omx-ds41-supervised-team' / old['bundle_digest'] / record['destination']
+        backup.parent.mkdir(parents=True)
+        backup.write_text('unrelated backup')
+        source = self.bundle / self.manifest['files'][-1]['source']
+        source.write_bytes(source.read_bytes() + b'\n// next version\n')
+        self.fails_unchanged(*self.args())
+
+    def test_uninstall_does_not_require_current_source_bytes(self):
+        self.install_ok()
+        (self.bundle / 'codex/pcaom-ds41.config.toml').write_text('changed source without marker')
+        result = self.run_installer('uninstall', *self.args()[1:])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_empty()
+
+    def test_receipt_change_before_mutation_fails_closed(self):
+        self.install_ok()
+        self.inject('transaction(actions, verify);',
+                    'writeFileSync(receipts[0].destination, "concurrent receipt change"); transaction(actions, verify);')
+        before = self.snapshot()
+        result = self.run_installer(*self.args())
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        before[str(self.receipts()[0])] = b'concurrent receipt change'
+        self.assertEqual(self.snapshot(), before)
+
+    def test_success_output_redacts_key_value(self):
+        secret = 'synthetic-secret'
+        self.project = self.root / secret
+        self.project.mkdir()
+        result = subprocess.run(['node', str(self.bundle / 'install.mjs'), *self.args(), '--dry-run'],
+                                env=dict(os.environ, DEEPSEEK_API_KEY=secret), text=True,
+                                capture_output=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(secret, result.stdout + result.stderr)
+        self.assertTrue(json.loads(result.stdout)['ok'])
+
+    def test_uninstall_cleanup_fault_restores_files(self):
+        self.install_ok()
+        self.inject('      rmdirSync(path);', '      rmdirSync(path); throw new Error("cleanup fault");')
+        self.fails_unchanged('uninstall', *self.args()[1:])
+
+    def test_directory_identity_change_before_mutation_fails(self):
+        self.install_ok()
+        self.inject('transaction(actions, verify);',
+                    'renameSync(options.projectRoot, options.projectRoot + ".moved"); mkdirSync(options.projectRoot); transaction(actions, verify);')
+        result = self.run_installer('uninstall', *self.args()[1:])
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(list(self.project.iterdir()), [])
+        self.assertTrue(self.receipts()[1].exists())
+
+    def test_symlink_receipt_parent_fails_closed(self):
+        self.install_ok()
+        parent = self.receipts()[0].parent
+        moved = self.project / 'moved-receipts'
+        parent.rename(moved)
+        parent.symlink_to(moved, target_is_directory=True)
+        self.fails_unchanged(*self.args())
+        self.fails_unchanged('uninstall', *self.args()[1:])
 
 
 if __name__ == "__main__":
