@@ -260,6 +260,11 @@ function transaction(actions, verify) {
         if (action.before === null) {
           if (existingBytes(action.root, action.destination) !== null) unlinkSync(action.destination);
         } else atomicWrite(action.destination, action.before);
+      } catch {
+        // A filesystem operation can throw after completing its mutation.
+        // Judge rollback by the verified final state, not the restore exception.
+      }
+      try {
         requireValid(sameBytes(existingBytes(action.root, action.destination), action.before), "Rollback verification failed");
       } catch { rollbackProblems.push(action.destination); }
     }
@@ -294,7 +299,11 @@ function emit(stream, data) {
 }
 
 function removeEmptyParents(root, destination) {
-  for (let path = dirname(destination); path !== root; path = dirname(path)) {
+  const skillRoot = resolve(root, ".codex/skills/pcaom-ds41-team");
+  if (!withinRoot(skillRoot, destination)) return;
+  // Only this bundle's unique Skill subtree is eligible for cleanup. Shared
+  // Skill, catalog, and receipt parents belong to the host, even when empty.
+  for (let path = dirname(destination); path !== dirname(skillRoot); path = dirname(path)) {
     try {
       requireValid(!lstatSync(path).isSymbolicLink(), "Cleanup path contains symlink");
       rmdirSync(path);

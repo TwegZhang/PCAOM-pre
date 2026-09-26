@@ -302,6 +302,50 @@ class CodexOmxDs41InstallerTests(unittest.TestCase):
                     'renameSync(temporary, destination); if (destination.includes("pcaom-installations")) throw new Error("receipt fault");')
         self.fails_unchanged(*self.args())
 
+    def test_rollback_diagnostic_checks_actual_restored_state(self):
+        self.install_ok()
+        source = self.bundle / self.manifest['files'][-1]['source']
+        source.write_bytes(source.read_bytes() + b'\n// next version\n')
+        self.inject('renameSync(temporary, destination);',
+                    'renameSync(temporary, destination); if (destination.includes("pcaom-installations")) throw new Error("receipt fault");')
+        before = self.snapshot()
+        result = self.run_installer(*self.args())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.snapshot(), before)
+        diagnostic = json.loads(result.stderr)
+        self.assertNotEqual(diagnostic['error'], 'rollback-failed')
+        self.assertEqual(diagnostic['rollbackProblems'], [])
+        self.assertEqual(diagnostic['reason'], 'receipt fault')
+
+    def test_uninstall_preserves_shared_directory_boundaries(self):
+        shared = [self.project / '.codex', self.project / '.codex/skills',
+                  self.project / '.pcaom/installations',
+                  self.codex_home / 'model-catalogs', self.codex_home / 'pcaom-installations']
+        for directory in shared:
+            directory.mkdir(parents=True, exist_ok=True)
+        self.install_ok()
+        result = self.run_installer('uninstall', *self.args()[1:])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for directory in shared:
+            self.assertTrue(directory.is_dir(), str(directory))
+        self.assertFalse((self.project / '.codex/skills/pcaom-ds41-team').exists())
+        self.assertEqual(self.snapshot(), {})
+
+    def test_uninstall_rollback_diagnostic_checks_actual_restored_state(self):
+        self.install_ok()
+        self.inject('if (action.action === "delete") unlinkSync(action.destination);',
+                    'if (action.action === "delete") { unlinkSync(action.destination); if (action.destination.includes("pcaom-installations")) throw new Error("delete fault"); }')
+        self.inject('renameSync(temporary, destination);',
+                    'renameSync(temporary, destination); if (destination.includes("pcaom-installations")) throw new Error("restore fault");')
+        before = self.snapshot()
+        result = self.run_installer('uninstall', *self.args()[1:])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.snapshot(), before)
+        diagnostic = json.loads(result.stderr)
+        self.assertNotEqual(diagnostic['error'], 'rollback-failed')
+        self.assertEqual(diagnostic['rollbackProblems'], [])
+        self.assertEqual(diagnostic['reason'], 'delete fault')
+
     def test_conflicting_backup_fails_before_replacement(self):
         self.install_ok()
         old = json.loads(self.receipts()[0].read_bytes())
@@ -318,7 +362,7 @@ class CodexOmxDs41InstallerTests(unittest.TestCase):
         (self.bundle / 'codex/pcaom-ds41.config.toml').write_text('changed source without marker')
         result = self.run_installer('uninstall', *self.args()[1:])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assert_empty()
+        self.assertEqual(self.snapshot(), {})
 
     def test_receipt_change_before_mutation_fails_closed(self):
         self.install_ok()
