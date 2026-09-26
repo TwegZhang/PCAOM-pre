@@ -36,7 +36,10 @@ with open(os.environ['PCAOM_TEST_CALL_LOG'], 'a') as f:
     manifest=root/'project/.omx/pcaom-supervisor/demo/run.json'
     state=json.loads(manifest.read_text()).get('state') if manifest.exists() else None
     f.write(json.dumps({'program':p,'args':a,'manifest_state':state,'selected_env':{k:os.environ.get(k) for k in ['OMX_TEAM_WORKER_CLI','OMX_TEAM_WORKER_LAUNCH_ARGS']}})+'\n')
-if a in [['--version'], ['-V']]:
+if p == 'git':
+    import subprocess
+    sys.exit(subprocess.run([os.environ['PCAOM_TEST_REAL_GIT'], *a]).returncode)
+elif a in [['--version'], ['-V']]:
     if scenario == 'delayed-version' and p == 'codex':
         import time
         time.sleep(2)
@@ -68,6 +71,9 @@ elif p == 'omx':
         print('wrong' if scenario == 'bad-prefix' else 'Team shutdown complete: '+a[2])
     else: sys.exit('Unexpected OMX runtime command during preflight')
 elif a[0] == 'display-message':
+    if a[-1] == '#{session_id}':
+        print('$1')
+        sys.exit(0)
     pane=a[a.index('-t')+1]
     print('$1\t@2\t'+pane+'\t'+('999' if scenario == 'pane-pid-changed' else ('222' if pane == '%2' else '333'))+'\towner-demo\t1700000000\tfixture:2')
 elif a[0] == 'list-panes':
@@ -175,7 +181,7 @@ class BridgeTests(unittest.TestCase):
         self.spec.write_text(SPEC)
         bin_dir = self.root / 'bin'
         bin_dir.mkdir()
-        for name in ['tmux', 'omx', 'codex']:
+        for name in ['tmux', 'omx', 'codex', 'git']:
             app = bin_dir / name
             app.write_text(FAKE)
             app.chmod(0o700)
@@ -184,6 +190,7 @@ class BridgeTests(unittest.TestCase):
                         TMUX='synthetic,1,0', TMUX_PANE='%1', CODEX_HOME=str(self.home),
                         DEEPSEEK_API_KEY='secret-sentinel-never-log',
                         PCAOM_TEST_SCENARIO='accepted',
+                        PCAOM_TEST_REAL_GIT=shutil.which('git'),
                         PCAOM_TEST_CALL_LOG=str(self.log), PCAOM_TEST_ROOT=str(self.root))
 
     def invoke(self, *args):
@@ -359,7 +366,7 @@ class BridgeTests(unittest.TestCase):
         self.team_fixture()
         self.assertEqual(self.invoke('resume','--team','demo')[0].returncode,0)
         self.log.write_text('')
-        self.config['created_at']='replacement'
+        self.config['created_at']='2026-09-28T00:00:00Z'
         self.write_team()
         self.assert_failure(self.invoke('abort','--team','demo'),'abort')
         self.config['created_at']='2026-09-27T00:00:00Z'
@@ -435,6 +442,51 @@ class BridgeTests(unittest.TestCase):
         for cmd in ['resume','finalize','abort']:
             self.assert_failure(self.invoke(cmd,'--team','demo'),cmd)
         self.assertEqual(self.runtime_calls(),[])
+
+    def lifecycle_arguments(self, command):
+        return [command,'--team','demo'] + (['--message','fixture'] if command == 'steer' else ['--timeout-ms','1'] if command == 'await' else [])
+
+    def test_missing_run_and_team_sessions_never_spawn(self):
+        self.team_fixture()
+        file=self.run_dir/'run.json'
+        manifest=json.loads(file.read_text())
+        del manifest['session']
+        file.write_text(json.dumps(manifest))
+        del self.config['tmux_session_id']
+        self.write_team()
+        for command in ['status','await','steer','resume','finalize','abort']:
+            with self.subTest(command=command):
+                self.assert_failure(self.invoke(*self.lifecycle_arguments(command)),command,'IDENTITY_INVALID')
+                self.assertEqual(self.calls(),[])
+
+    def test_malformed_run_identities_never_spawn(self):
+        self.team_fixture()
+        file=self.run_dir/'run.json'
+        original=json.loads(file.read_text())
+        variants=[('session',None),('session',''),('session','demo'),('session',1),('window_id',None),('window_id','@x'),('supervisor_window_id','@2'),('leader_pane_id',None),('leader_pane_id','%x'),('supervisor_pane_id','%2'),('pane_ids',[]),('pane_ids',['%2','%2']),('pane_ids',['%bogus']),('team','__proto__'),('team',None),('project_root','relative'),('context_path','relative'),('context_path',str(self.project/'elsewhere.md')),('context_digest',None),('context_digest','bad'),('profile',None),('profile','default'),('handoff_id',None),('handoff_id',''),('go_id',None),('state',None),('state','__proto__'),('server',None),('server',{'socket_path':'relative','pid':'123','start_time':'1700000000'}),('server',{'socket_path':'/tmp/fake-tmux.sock','pid':0,'start_time':'1700000000'}),('server',{'socket_path':'/tmp/fake-tmux.sock','pid':'123','start_time':None})]
+        for key,value in variants:
+            file.write_text(json.dumps(dict(original,**{key:value})))
+            for command in ['status','await','steer','resume','finalize','abort']:
+                with self.subTest(field=key,value=value,command=command):
+                    self.assert_failure(self.invoke(*self.lifecycle_arguments(command)),command,'IDENTITY_INVALID')
+                    self.assertEqual(self.calls(),[])
+
+    def test_incomplete_team_identities_never_spawn(self):
+        self.team_fixture()
+        original=json.loads(json.dumps(self.config))
+        variants=[('tmux_session_id',None),('tmux_session_id',''),('tmux_session_id','demo'),('tmux_session_id',7),('tmux_session',None),('tmux_session_created',None),('leader_pane_id',None),('leader_pane_pid',None),('leader_pane_pid',0),('tmux_pane_owner_id',None),('tmux_pane_owner_id',''),('leader_cwd',None),('name','__proto__'),('created_at',None),('created_at','not-a-date'),('workers',None),('workers',[]),('workers',[dict(original['workers'][0],pid=None)]),('workers',[dict(original['workers'][0],pane_id=None)]),('hud_pane_id','%4')]
+        for key,value in variants:
+            self.config=dict(original,**{key:value})
+            self.write_team()
+            for command in ['status','await','steer','resume','finalize','abort']:
+                with self.subTest(field=key,value=value,command=command):
+                    self.assert_failure(self.invoke(*self.lifecycle_arguments(command)),command,'IDENTITY_INVALID')
+                    self.assertEqual(self.calls(),[])
+
+    def test_commands_cannot_use_prototype_names(self):
+        for command in ['__proto__','constructor','toString']:
+            self.assert_failure(self.invoke(command,'--team','demo'),'arguments')
+        self.assertEqual(self.calls(),[])
 
     def test_preflight_requires_environment(self):
         for key in ['TMUX', 'TMUX_PANE', 'DEEPSEEK_API_KEY', 'CODEX_HOME']:
@@ -535,7 +587,10 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(create['selected_env'], {'OMX_TEAM_WORKER_CLI':'codex','OMX_TEAM_WORKER_LAUNCH_ARGS':'--profile pcaom-ds41'})
         before = self.calls()[:self.calls().index(create)]
         for call in before:
-            self.assertIn((call['program'], call['args'][0]), [('codex','--version'), ('omx','--version'), ('tmux','-V'), ('tmux','list-panes'), ('tmux','show-environment'), ('tmux','show-options'), ('tmux','set-option'), ('tmux','-C')])
+            self.assertIn((call['program'], call['args'][0]), [('git','rev-parse'), ('codex','--version'), ('omx','--version'), ('tmux','-V'), ('tmux','display-message'), ('tmux','list-panes'), ('tmux','show-environment'), ('tmux','show-options'), ('tmux','set-option'), ('tmux','-C')])
+        for call in self.calls('list-panes'):
+            self.assertEqual(call['args'][1:4],['-s','-t','$1'])
+            self.assertNotIn('-a',call['args'])
         calls = [c['args'] for c in self.calls()]
         set_args, go_args = [a for a in calls if a[0] == 'set-buffer']
         self.assertEqual(set_args[:2], ['set-buffer','-b'])

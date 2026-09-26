@@ -18,6 +18,16 @@ let deadline;
 let commandTimeout = 5000;
 let stage = 'arguments';
 function requireThat(condition, message) { if (!condition) throw new Error(message); }
+function requireIdentity(condition, message) {
+  if (!condition) { const error = new Error(`Invalid bridge identity: ${message}`); error.code = 'IDENTITY_INVALID'; throw error; }
+}
+const matches = (value,pattern) => typeof value === 'string' && pattern.test(value);
+const sessionId = value => matches(value,/^\$[0-9]+$/);
+const windowId = value => matches(value,/^@[0-9]+$/);
+const paneId = value => matches(value,/^%[0-9]+$/);
+const positiveInteger = value => Number.isSafeInteger(value) && value > 0;
+const positiveDecimal = value => matches(value,/^[1-9][0-9]*$/) && positiveInteger(Number(value));
+const absolutePath = value => typeof value === 'string' && path.isAbsolute(value) && path.normalize(value) === value && !value.includes('\0');
 function run(program, args, options = {}) {
   const {privateOutput = false, ...spawnOptions} = options;
   const timeout = deadline ? Math.max(1, Math.min(commandTimeout, deadline - Date.now())) : commandTimeout;
@@ -44,8 +54,9 @@ function emit(ok, command, evidence) {
 }
 function parseArgs() {
   const [command, ...args] = process.argv.slice(2);
-  const allowed = {start: ['spec', 'workers', 'team', 'startup-timeout-ms','command-timeout-ms'], inspect: ['team', 'pane', 'lines','command-timeout-ms'], status:['team'], await:['team','timeout-ms','after-event-id'], steer:['team','message','ack-timeout-ms'], resume:['team'], finalize:['team'], abort:['team']}[command];
-  requireThat(allowed, 'Unknown bridge command');
+  const commands = {start: ['spec', 'workers', 'team', 'startup-timeout-ms','command-timeout-ms'], inspect: ['team', 'pane', 'lines','command-timeout-ms'], status:['team'], await:['team','timeout-ms','after-event-id'], steer:['team','message','ack-timeout-ms'], resume:['team'], finalize:['team'], abort:['team']};
+  requireThat(Object.hasOwn(commands,command), 'Unknown bridge command');
+  const allowed = commands[command];
   const options = {};
   for (let i = 0; i < args.length; i += 2) {
     const key = args[i].slice(2), value = args[i + 1];
@@ -90,13 +101,24 @@ function readRegular(file) {
   requireThat(stat.isFile() && !stat.isSymbolicLink() && (stat.mode & 0o444), 'Expected readable regular non-symlink file');
   return fs.readFileSync(file, 'utf8');
 }
-function rootDirectory() {
+function rootDirectory(localOnly = false) {
+  if (localOnly) {
+    // A malformed persisted identity must fail before even invoking Git.
+    let root = fs.realpathSync(process.cwd());
+    while (true) {
+      if (!pathAbsent(path.join(root,'.git'))) return root;
+      const parent = path.dirname(root);
+      requireIdentity(parent !== root, 'Project root not found');
+      root = parent;
+    }
+  }
   const root = fs.realpathSync(run('git', ['rev-parse', '--show-toplevel']).trim());
   requireThat(inside(root, fs.realpathSync(process.cwd())), 'Working directory outside project');
   return root;
 }
 function panes(session) {
-  return run('tmux', ['list-panes', ...(session ? ['-s','-t',session] : ['-a']), '-F', '#{session_id}\t#{window_id}\t#{pane_id}\t#{window_name}\t#{pane_dead}\t#{pane_current_command}\t#{socket_path}\t#{pid}\t#{start_time}']).trim().split('\n').map(line => {
+  requireIdentity(sessionId(session), 'Exact tmux session ID required');
+  return run('tmux', ['list-panes', '-s','-t',session, '-F', '#{session_id}\t#{window_id}\t#{pane_id}\t#{window_name}\t#{pane_dead}\t#{pane_current_command}\t#{socket_path}\t#{pid}\t#{start_time}']).trim().split('\n').map(line => {
     const [session, window_id, pane_id, name, dead, command, socket_path, pid, start_time, extra] = line.split('\t');
     requireThat(/^\$[0-9]+$/.test(session) && /^@[0-9]+$/.test(window_id) && /^%[0-9]+$/.test(pane_id) && name && /^(0|1)$/.test(dead) && command && path.isAbsolute(socket_path ?? '') && /^[1-9][0-9]*$/.test(pid) && /^[1-9][0-9]*$/.test(start_time) && extra === undefined, 'Malformed tmux identity');
     return {session, window_id, pane_id, name, dead, command, server:{socket_path,pid,start_time}};
@@ -326,7 +348,8 @@ function start(root, options) {
   const stem = path.basename(specPath,path.extname(specPath)).toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,40) || 'feature';
   const team = options.team ?? `${stem}-${specDigest.slice(0,8)}`;
   assertNoTeamCollision(root,team);
-  const live = panes();
+  const supervisorSession = run('tmux',['display-message','-p','-t',process.env.TMUX_PANE,'#{session_id}']).trim();
+  const live = panes(supervisorSession);
   const supervisor = live.filter(p => p.pane_id === process.env.TMUX_PANE);
   requireThat(supervisor.length === 1, 'Supervisor pane not uniquely live');
   const windowName = `ds41-team-${team}`;
@@ -437,10 +460,7 @@ function start(root, options) {
 }
 function inspect(root, options) {
   stage = 'inspect';
-  const file = path.join(root,'.omx/pcaom-supervisor',options.team,'run.json');
-  requireThat(fs.realpathSync(file) === file, 'Manifest path must not traverse symlinks');
-  const manifest = JSON.parse(readRegular(file));
-  requireThat(manifest.schema_version === 1 && manifest.team === options.team && manifest.project_root === root && Array.isArray(manifest.pane_ids), 'Invalid run manifest');
+  const {manifest} = loadRun(root,options.team);
   const pane = options.pane === 'leader' ? manifest.leader_pane_id : options.pane;
   requireThat(manifest.pane_ids.includes(pane), 'Pane not owned by manifest');
   requireThat(assertExactIdentity(manifest).some(p => p.pane_id === pane), 'Pane not live');
@@ -467,8 +487,19 @@ function loadRun(root,team) {
   const directory = path.join(root,'.omx/pcaom-supervisor',team);
   const file = path.join(directory,'run.json');
   const manifest = readJson(file);
-  requireThat(manifest.schema_version === 1 && manifest.team === team && manifest.project_root === root && Array.isArray(manifest.pane_ids), 'Invalid exact run manifest');
-  requireThat(manifest.context_path === path.join(root,'.omx/context',`${team}.md`) && digest(readBounded(manifest.context_path)) === manifest.context_digest, 'Context identity changed');
+  requireIdentity(manifest.schema_version === 1 && matches(manifest.team,/^[a-z0-9][a-z0-9-]{0,63}$/) && manifest.team === team, 'Exact team name required');
+  requireIdentity(absolutePath(root) && absolutePath(manifest.project_root) && manifest.project_root === root && inside(root,directory) && fs.realpathSync(directory) === directory, 'Canonical project/run paths required');
+  requireIdentity(sessionId(manifest.session) && windowId(manifest.window_id) && windowId(manifest.supervisor_window_id) && manifest.window_id !== manifest.supervisor_window_id, 'Exact session/window IDs required');
+  requireIdentity(paneId(manifest.leader_pane_id) && paneId(manifest.supervisor_pane_id) && manifest.leader_pane_id !== manifest.supervisor_pane_id && Array.isArray(manifest.pane_ids) && manifest.pane_ids.length > 0 && manifest.pane_ids.every(paneId) && new Set(manifest.pane_ids).size === manifest.pane_ids.length && manifest.pane_ids.includes(manifest.leader_pane_id) && !manifest.pane_ids.includes(manifest.supervisor_pane_id), 'Exact leader/supervisor/pane IDs required');
+  requireIdentity(manifest.server && absolutePath(manifest.server.socket_path) && positiveDecimal(manifest.server.pid) && positiveDecimal(manifest.server.start_time), 'Complete tmux server generation required');
+  requireIdentity(manifest.profile === 'pcaom-ds41' && matches(manifest.context_digest,/^[a-f0-9]{64}$/) && matches(manifest.spec_digest,/^[a-f0-9]{64}$/), 'Profile and digests required');
+  requireIdentity(absolutePath(manifest.spec_path) && inside(root,manifest.spec_path) && absolutePath(manifest.context_path) && manifest.context_path === path.join(root,'.omx/context',`${team}.md`), 'Canonical project context/spec paths required');
+  const states = ['starting','awaiting_ack','accepted','go_submitting','go_submitted','resumed','finalized','aborted','failed'];
+  requireIdentity(typeof manifest.state === 'string' && states.includes(manifest.state), 'Known run state required');
+  const uuid = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
+  if (!['starting','failed'].includes(manifest.state)) requireIdentity(matches(manifest.handoff_id,uuid), 'Bound handoff ID required');
+  if (['go_submitting','go_submitted','resumed','finalized','aborted'].includes(manifest.state)) requireIdentity(matches(manifest.go_id,uuid), 'Bound GO ID required');
+  requireIdentity(digest(readBounded(manifest.context_path)) === manifest.context_digest, 'Context digest changed');
   const stateRoot = path.join(root,'.omx/state');
   for (const key of ['OMX_TEAM_STATE_ROOT','OMX_ROOT','OMX_STATE_ROOT']) {
     if (!process.env[key]?.trim()) continue;
@@ -484,6 +515,15 @@ function teamSnapshot(context) {
   requireThat(pathAbsent(path.join(teamDirectory,'.membership-task-transaction.json')), 'Membership transaction journal requires runtime recovery; passive bridge refuses');
   const config = readJson(path.join(teamDirectory,'config.json'));
   const teamManifest = readJson(path.join(teamDirectory,'manifest.v2.json'));
+  for (const record of [config,teamManifest]) {
+    requireIdentity(matches(record.name,/^[a-z0-9][a-z0-9-]{0,29}$/) && record.name === manifest.team && absolutePath(record.leader_cwd) && record.leader_cwd === root && absolutePath(record.team_state_root) && record.team_state_root === stateRoot, 'Exact Team name/cwd/root required');
+    requireIdentity(sessionId(record.tmux_session_id) && record.tmux_session_id === manifest.session && matches(record.tmux_session,/^[^\s:]+:[0-9]+$/) && positiveDecimal(record.tmux_session_created), 'Complete Team session identity required');
+    requireIdentity(paneId(record.leader_pane_id) && record.leader_pane_id === manifest.leader_pane_id && positiveInteger(record.leader_pane_pid) && matches(record.tmux_pane_owner_id,/^[A-Za-z0-9_.:-]{1,200}$/), 'Complete Leader pane/PID/owner required');
+    requireIdentity(matches(record.created_at,/^\d{4}-\d{2}-\d{2}T/) && Number.isFinite(Date.parse(record.created_at)), 'Team creation timestamp required');
+    requireIdentity(record.hud_pane_id === null && record.hud_pane_pid === null || paneId(record.hud_pane_id) && positiveInteger(record.hud_pane_pid), 'Complete HUD identity required');
+    requireIdentity(Array.isArray(record.workers) && record.workers.length > 0 && record.workers.length <= 32 && record.worker_count === record.workers.length, 'Configured workers required');
+    for (const worker of record.workers) requireIdentity(worker && matches(worker.name,/^[a-z0-9][a-z0-9-]{0,63}$/) && paneId(worker.pane_id) && positiveInteger(worker.pid) && positiveInteger(worker.index) && typeof worker.role === 'string' && worker.role.trim() && absolutePath(worker.worktree_path), 'Complete worker identity required');
+  }
   const keys = ['name','created_at','leader_cwd','team_state_root','tmux_session','tmux_session_id','tmux_session_created','leader_pane_id','leader_pane_pid','tmux_pane_owner_id','hud_pane_id','hud_pane_pid','worker_count','workspace_mode','worktree_mode'];
   requireThat(teamManifest.schema_version === 2 && teamManifest.leader?.worker_id === 'leader-fixed', 'Unsupported Team manifest');
   for (const key of keys) requireThat(JSON.stringify(config[key]) === JSON.stringify(teamManifest[key]), `Paired Team identity mismatch: ${key}`);
@@ -667,6 +707,6 @@ function lifecycle(root,command,options) {
 try {
   const {command,options} = parseArgs();
   stage = command === 'start' ? 'preflight' : command;
-  const root = rootDirectory();
+  const root = rootDirectory(command !== 'start');
   emit(true,command,command === 'start' ? start(root,options) : command === 'inspect' ? inspect(root,options) : lifecycle(root,command,options));
 } catch (error) { emit(false,undefined,{error:redact(error.message),code:error.code ?? 'BRIDGE_ERROR',stage:error.stage ?? stage,...(error.command_evidence ? {command_evidence:error.command_evidence}:{}),...(error.cleanup_diagnostics ? {cleanup_diagnostics:error.cleanup_diagnostics}:{})}); }
