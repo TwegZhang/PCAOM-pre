@@ -94,6 +94,11 @@ node scripts/verify-ds41-installer-roundtrip.mjs
 
 The script requires Node.js and Python 3.12, uses only standard libraries, and
 creates an exclusive `mkdtemp` directory beneath the OS temporary directory.
+Optional `--bundle <absolute-path>` and `--python <executable>` select an explicit
+trusted bundle/interpreter for diagnostics. The Python option accepts an absolute
+path or bare executable name; relative paths, unknown/repeated options and missing
+values fail before temporary-directory access. A selected bundle contains executable
+installer code and must be trusted.
 It copies the complete production bundle, including the actual bridge, and
 creates explicit `project root` and `codex home` children, each with an unrelated
 sentinel. It invokes the Node installer with argument arrays through `execFileSync`
@@ -106,8 +111,11 @@ Tree and SHA-256 assertions establish:
 - Install created exactly 4 managed files and 2 receipts alongside the 2 sentinels.
 - Identical reinstall preserved all destination file and receipt bytes.
 - Node parsed installed JSON receipts/catalog; Python 3.12 `tomllib.loads` parsed
-  the installed profile, asserting model `deepseek-flash` and the exact absolute
-  catalog path within that run's disposable Codex Home.
+  the installed profile, checking model `deepseek-flash` and the exact absolute
+  catalog path within that run's disposable Codex Home. Python runs with `-I`,
+  removes `PYTHONOPTIMIZE`, `PYTHONPATH` and `PYTHONHOME` from its environment,
+  and uses explicit `SystemExit` codes 20 (TOML), 21 (model), and 22 (catalog path)
+  instead of Python assertions. Node independently checks the catalog's sole model.
 - Uninstall removed the 4 managed files and 2 receipts and preserved both
   unrelated sentinels byte-for-byte. Both original and copied bundles remained unchanged.
 
@@ -133,12 +141,58 @@ and an isolated `TMPDIR`; it returned exit 1, JSON stderr with phase
 Observation links and `git diff --check` were
 checked again for this follow-up.
 
+### Verifier hardening follow-up
+
+The 04:06–04:08 harness evidence above is historical. Quality review identified
+that Python optimization could disable its assertions and generic failure output
+did not distinguish causes. The hardened harness supersedes those checks and
+diagnostics without promoting any target runtime status.
+
+On 2026-09-27 around 04:13–04:18 CST, the first 6
+[verifier regression tests](../../tests/test_ds41_evidence_verifier.py) ran before
+the fix and failed with 11 assertion failures (including option subtests): the old
+script ignored bundle/interpreter options, accepted wrong-model fixtures, and
+lacked classified diagnostics. After hardening, the focused verifier and installer
+suites passed. Additional tests cover malformed TOML, incorrect catalog path,
+redacted child-process failure, missing bundle, and simultaneous primary/cleanup
+failure. The latter deliberately replaces the temporary root identity: cleanup
+correctly refuses the replacement, preserves both diagnostics, and the enclosing
+test fixture then removes its own synthetic data.
+
+```sh
+node --check scripts/verify-ds41-installer-roundtrip.mjs
+node scripts/verify-ds41-installer-roundtrip.mjs
+PYTHONOPTIMIZE=1 node scripts/verify-ds41-installer-roundtrip.mjs
+PYTHONDONTWRITEBYTECODE=1 python3.12 -m unittest tests.test_ds41_evidence_verifier tests.test_codex_omx_ds41_installer -q
+```
+
+All commands exited 0. Both standalone executions emitted the same success JSON
+shown above. The focused run passed 44 tests: 10 new verifier tests and 34 installer
+tests. These are focused new results; the original 125-test and 111-test counts
+above describe their earlier source commit and were not replaced by a fresh full
+suite run.
+
+Failures emit one JSON object containing `ok: false` and a `failure` with stable
+`phase`, `check` and allowlisted `cause`: `subprocess_not_found`, `subprocess_exit`,
+`invalid_json`, `validation_failed`, or `filesystem`. Missing executables expose
+only `ENOENT` and numeric errno; other child failures expose numeric status/signal
+when available. No raw child output, validation operands, installed bytes, paths,
+or environment values are included. A cleanup problem adds a separate
+`cleanup_failure` classified `cleanup_failed`, preserving the primary failure.
+
+The optimized wrong-profile and wrong-catalog fixtures each produced
+`installed-profile` / `model` / `validation_failed`; a missing interpreter produced
+`installed-profile` / `python` / `subprocess_not_found`. Each ordinary failure
+removed its temporary directory. Invalid arguments failed before temporary root
+creation, including when `TMPDIR` named a nonexistent directory. No secret or
+test-only mutation hooks were added to the verifier.
+
 ## Evidence limits and next gate
 
 Established: static contracts, Node syntax, JSON/profile parsing, pinned catalog
 loader compatibility, isolated installer ownership/idempotence behavior, and
 local fake-adapter bridge regressions. A relative-link existence check resolves
-both bundle README links and all 4 observation links. No build/typecheck command
+both bundle README links and all 5 observation links. No build/typecheck command
 is applicable to this observation/harness change and plain JavaScript bundle;
 Node syntax checks and the Python suites are the executable checks used here.
 
