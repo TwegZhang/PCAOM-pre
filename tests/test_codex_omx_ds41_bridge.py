@@ -9,6 +9,7 @@ from pathlib import Path
 
 BUNDLE = Path(__file__).resolve().parents[1] / 'templates/codex-omx-ds41-supervised-team'
 BRIDGE = BUNDLE / 'project/.codex/skills/pcaom-ds41-team/scripts/supervisor-bridge.mjs'
+INTERNAL = 'demo-' + hashlib.sha256(b'fixture').hexdigest()[:8]
 # Synthetic process fixtures mirror pinned version output and tmux pane fields;
 # passing tests do not establish actual runtime/provider startup capability.
 # Spec requires these full-line markers and a nonempty sh/bash Verification fence.
@@ -35,7 +36,7 @@ scenario = os.environ.get('PCAOM_TEST_SCENARIO', '')
 with open(os.environ['PCAOM_TEST_CALL_LOG'], 'a') as f:
     manifest=root/'project/.omx/pcaom-supervisor/demo/run.json'
     state=json.loads(manifest.read_text()).get('state') if manifest.exists() else None
-    f.write(json.dumps({'program':p,'args':a,'manifest_state':state,'selected_env':{k:os.environ.get(k) for k in ['OMX_TEAM_WORKER_CLI','OMX_TEAM_WORKER_LAUNCH_ARGS']}})+'\n')
+    f.write(json.dumps({'program':p,'args':a,'manifest_state':state,'state_root':os.environ.get('OMX_TEAM_STATE_ROOT'),'selected_env':{k:os.environ.get(k) for k in ['OMX_TEAM_WORKER_CLI','OMX_TEAM_WORKER_LAUNCH_ARGS']}})+'\n')
 if p == 'git':
     import subprocess
     sys.exit(subprocess.run([os.environ['PCAOM_TEST_REAL_GIT'], *a]).returncode)
@@ -51,7 +52,7 @@ elif p == 'omx':
     if a[:3] == ['team','api','await-event']:
         request=json.loads(a[4])
         data={'status':'timeout','cursor':request['after_event_id'],'event':None}
-        if scenario == 'event': data={'status':'event','cursor':'e3','event':{'event_id':'e3','team':'demo','type':'task_completed','worker':'worker-1','created_at':'now'}}
+        if scenario == 'event': data={'status':'event','cursor':'e3','event':{'event_id':'e3','team':request['team_name'],'type':'task_completed','worker':'worker-1','created_at':'now'}}
         print(json.dumps({'schema_version':'1.0','timestamp':'2026-09-27T00:00:00Z','command':'wrong' if scenario == 'bad-envelope' else 'omx team api await-event','ok':True,'operation':'await-event','data':data}))
     elif a[:3] == ['team','api','send-message']:
         if scenario == 'api-error': sys.exit('unsupported sender')
@@ -68,6 +69,16 @@ elif p == 'omx':
         print('wrong' if scenario == 'bad-prefix' else 'Team started: '+a[2])
     elif a[:2] == ['team','shutdown']:
         if scenario == 'shutdown-error': sys.exit('shutdown gate failed')
+        if scenario == 'shutdown-delayed':
+            import time
+            time.sleep(6)
+        if scenario == 'shutdown-timeout':
+            import time
+            time.sleep(61)
+        if scenario not in ['bad-prefix','shutdown-partial']:
+            import shutil
+            shutil.rmtree(pathlib.Path(os.environ['OMX_TEAM_STATE_ROOT'])/'team'/a[2])
+            if scenario != 'shutdown-worker-left': (root/'workers').unlink(missing_ok=True)
         print('wrong' if scenario == 'bad-prefix' else 'Team shutdown complete: '+a[2])
     else: sys.exit('Unexpected OMX runtime command during preflight')
 elif a[0] == 'display-message':
@@ -82,6 +93,7 @@ elif a[0] == 'list-panes':
     if (root/'created').exists():
         print('$1\t'+('@9' if scenario == 'changed' or (scenario == 'identity-after-buffer' and (root/'buffer').exists()) else '@2')+'\t%2\tds41-team-demo\t'+('1' if scenario == 'dead' else '0')+'\t'+('zsh' if scenario == 'timeout' else 'codex')+generation)
         if (root/'workers').exists(): print('$1\t@2\t%3\tds41-team-demo\t0\tcodex'+generation)
+        if (root/'extra-hud').exists(): print('$1\t@2\t%4\tds41-team-demo\t0\tnode'+generation)
 elif a[0] == 'show-environment':
     if (root/'session-env.json').exists():
         for key,value in json.loads((root/'session-env.json').read_text()).items():
@@ -223,11 +235,13 @@ class BridgeTests(unittest.TestCase):
     def team_fixture(self):
         self.assertEqual(self.start()[0].returncode, 0)
         self.run_dir=self.project/'.omx/pcaom-supervisor/demo'
-        self.team_dir=self.project/'.omx/state/team/demo'
+        run=json.loads((self.run_dir/'run.json').read_text())
+        self.state_root=Path(run.get('state_root',str(self.project/'.omx/state')))
+        self.team_dir=self.state_root/'team'/INTERNAL
         self.team_dir.mkdir(parents=True)
         (self.root/'workers').touch()
-        worker={'name':'worker-1','index':1,'role':'executor','assigned_tasks':['1'],'pid':333,'pane_id':'%3','working_dir':str(self.project),'worktree_path':str(self.project),'team_state_root':str(self.project/'.omx/state')}
-        self.config={'name':'demo','task':'Synthetic','agent_type':'executor','worker_launch_mode':'interactive','lifecycle_profile':'default','worker_count':1,'max_workers':20,'workers':[worker],'created_at':'2026-09-27T00:00:00Z','tmux_session':'fixture:2','tmux_session_id':'$1','tmux_session_created':'1700000000','next_task_id':2,'leader_cwd':str(self.project),'team_state_root':str(self.project/'.omx/state'),'leader_pane_id':'%2','leader_pane_pid':222,'hud_pane_id':None,'hud_pane_pid':None,'tmux_pane_owner_id':'owner-demo','resize_hook_name':None,'resize_hook_target':None,'config_generation':1}
+        worker={'name':'worker-1','index':1,'role':'executor','assigned_tasks':['1'],'pid':333,'pane_id':'%3','working_dir':str(self.project),'worktree_path':str(self.project),'team_state_root':str(self.state_root)}
+        self.config={'name':INTERNAL,'display_name':'demo','requested_name':'demo','task':'Synthetic','agent_type':'executor','worker_launch_mode':'interactive','lifecycle_profile':'default','worker_count':1,'max_workers':20,'workers':[worker],'created_at':'2026-09-27T00:00:00Z','tmux_session':'fixture:2','tmux_session_id':'$1','tmux_session_created':'1700000000','next_task_id':2,'leader_cwd':str(self.project),'team_state_root':str(self.state_root),'leader_pane_id':'%2','leader_pane_pid':222,'hud_pane_id':None,'hud_pane_pid':None,'tmux_pane_owner_id':'owner-demo','resize_hook_name':None,'resize_hook_target':None,'config_generation':1}
         self.write_team()
         (self.team_dir/'phase.json').write_text(json.dumps({'current_phase':'team-exec','iteration':1}))
         (self.team_dir/'tasks').mkdir()
@@ -238,9 +252,21 @@ class BridgeTests(unittest.TestCase):
         for name,value in [('identity',worker),('status',{'state':'done'}),('heartbeat',{'pid':333,'alive':True})]:
             (worker_dir/(name+'.json')).write_text(json.dumps(value))
         (self.team_dir/'events').mkdir()
-        events=[{'event_id':'e1','team':'demo','type':'task_completed','worker':'worker-1','created_at':'now'}, {'event_id':'e2','team':'demo','type':'worker_diff_activity','worker':'worker-1','created_at':'now'}]
+        events=[{'event_id':'e1','team':INTERNAL,'type':'task_completed','worker':'worker-1','created_at':'now'}, {'event_id':'e2','team':INTERNAL,'type':'worker_diff_activity','worker':'worker-1','created_at':'now'}]
         (self.team_dir/'events/events.ndjson').write_text('\n'.join(json.dumps(event) for event in events)+'\n')
+        self.bind_team()
         self.log.write_text('')
+
+    def bind_team(self):
+        run=json.loads((self.run_dir/'run.json').read_text())
+        if 'binding_contract' not in run: return
+        binding=dict(run['binding_contract'])
+        keys=binding.pop('identity_fields')
+        worker_keys=binding.pop('worker_identity_fields')
+        identity={key:self.config.get(key) for key in keys}
+        identity.update(state_root=str(self.state_root),team_directory=str(self.team_dir),workers=[{key:worker.get(key) for key in worker_keys} for worker in self.config['workers']],leader={'session_id':'session','worker_id':'leader-fixed','role':'leader'})
+        binding.update(internal_name=INTERNAL,display_name='demo',requested_name='demo',created_at=self.config['created_at'],bound_at='2026-09-27T01:00:00Z',leader_pane_pid=222,owner_id='owner-demo',leader=identity['leader'],identity=identity,config_sha256=hashlib.sha256((self.team_dir/'config.json').read_bytes()).hexdigest(),manifest_sha256=hashlib.sha256((self.team_dir/'manifest.v2.json').read_bytes()).hexdigest())
+        (self.run_dir/'team-bound.json').write_text(json.dumps(binding))
 
     def write_team(self):
         (self.team_dir/'config.json').write_text(json.dumps(self.config))
@@ -253,7 +279,7 @@ class BridgeTests(unittest.TestCase):
         run=json.loads((self.run_dir/'run.json').read_text())
         handoff=self.project/'handoff.md'
         handoff.write_text('Synthetic final handoff')
-        proof={'team':'demo','context_digest':run['context_digest'],'verification':[{'command':'python3 -m unittest','result':'pass','exit_code':0}], 'handoff_path':str(handoff),'handoff_digest':hashlib.sha256(handoff.read_bytes()).hexdigest()}
+        proof={'team':INTERNAL,'context_digest':run['context_digest'],'verification':[{'command':'python3 -m unittest','result':'pass','exit_code':0}], 'handoff_path':str(handoff),'handoff_digest':hashlib.sha256(handoff.read_bytes()).hexdigest()}
         (self.run_dir/'leader-final.json').write_text(json.dumps(proof))
 
     def test_status_returns_raw_team_summary_and_manifest_identity(self):
@@ -278,6 +304,162 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(data['evidence']['status'],'awaiting-team')
         self.assertEqual(self.runtime_calls(),[])
 
+    def test_start_allocates_exclusive_root_and_requires_leader_binding(self):
+        result,data=self.start()
+        self.assertEqual(result.returncode,0,data)
+        run=data['evidence']
+        self.assertIn('run_id',run)
+        self.assertEqual(run['binding_contract'].get('adapter_version'),1)
+        state_root=self.project/'.omx-pcaom-team-state'/run['run_id']
+        self.assertEqual(run['state_root'],str(state_root))
+        self.assertEqual(run['state_root_identity'],{'dev':state_root.stat().st_dev,'ino':state_root.stat().st_ino,'uid':state_root.stat().st_uid})
+        self.assertIn('OMX_TEAM_STATE_ROOT='+str(state_root),self.calls('new-window')[0]['args'])
+        self.assertIn('team-bound.json',(self.root/'go').read_text())
+
+    def test_unbound_team_blocks_all_mutating_or_await_calls(self):
+        self.team_fixture()
+        (self.run_dir/'team-bound.json').unlink(missing_ok=True)
+        result,data=self.invoke('status','--team','demo')
+        self.assertEqual(result.returncode,0,data)
+        self.assertEqual(data['evidence']['status'],'team-unbound')
+        for command in ['await','steer','resume','finalize','abort']:
+            self.assert_failure(self.invoke(*self.lifecycle_arguments(command)),command,'TEAM_UNBOUND')
+        self.assertEqual(self.runtime_calls(),[])
+
+    def test_active_inspect_authorizes_workers_but_not_extra_hud(self):
+        self.team_fixture()
+        (self.root/'extra-hud').touch()
+        for pane in ['leader','%3']:
+            result,data=self.invoke('inspect','--team','demo','--pane',pane)
+            self.assertEqual(result.returncode,0,data)
+        self.assert_failure(self.invoke('inspect','--team','demo','--pane','%4'),'inspect')
+        self.config['workers'][0]['pid']=334
+        self.write_team()
+        self.assert_failure(self.invoke('inspect','--team','demo','--pane','%3'),'inspect','IDENTITY_INVALID')
+
+    def test_unbound_inspect_cannot_adopt_recorded_worker_panes(self):
+        self.team_fixture()
+        (self.run_dir/'team-bound.json').unlink()
+        file=self.run_dir/'run.json'
+        manifest=json.loads(file.read_text())
+        manifest['pane_ids'].append('%3')
+        file.write_text(json.dumps(manifest))
+        self.assert_failure(self.invoke('inspect','--team','demo','--pane','%3'),'inspect')
+        self.assertEqual(self.calls('capture-pane'),[])
+        result,data=self.invoke('inspect','--team','demo','--pane','leader')
+        self.assertEqual(result.returncode,0,data)
+
+    def test_shutdown_delayed_success_and_partial_teardown(self):
+        self.team_fixture()
+        self.env['PCAOM_TEST_SCENARIO']='shutdown-delayed'
+        result,data=self.invoke('abort','--team','demo')
+        self.assertEqual(result.returncode,0,data)
+        self.assertFalse(self.team_dir.exists())
+        self.assertEqual(self.calls('team')[-1]['manifest_state'],'shutdown_submitting')
+
+    def test_shutdown_partial_teardown_is_uncertain_and_cannot_retry(self):
+        self.team_fixture()
+        self.env['PCAOM_TEST_SCENARIO']='shutdown-partial'
+        self.assert_failure(self.invoke('abort','--team','demo'),'abort')
+        self.assertEqual(json.loads((self.run_dir/'run.json').read_text())['state'],'shutdown_uncertain')
+        self.log.write_text('')
+        self.assert_failure(self.invoke('abort','--team','demo'),'abort')
+        self.assertEqual(self.runtime_calls(),[])
+
+    def test_binding_replay_internal_mismatch_and_root_replacement(self):
+        self.team_fixture()
+        binding_path=self.run_dir/'team-bound.json'
+        original=json.loads(binding_path.read_text())
+        for key,value in [('internal_name','other'),('run_id','replayed'),('go_id','replayed'),('context_digest','0'*64),('state_root','/other')]:
+            binding_path.write_text(json.dumps(dict(original,**{key:value})))
+            self.assert_failure(self.invoke('resume','--team','demo'),'resume','IDENTITY_INVALID')
+            self.assertEqual(self.calls(),[])
+        binding_path.write_text(json.dumps(original))
+        moved=self.state_root.with_name(self.state_root.name+'-original')
+        self.state_root.rename(moved)
+        self.state_root.mkdir()
+        self.assert_failure(self.invoke('abort','--team','demo'),'abort','IDENTITY_INVALID')
+        self.state_root.rmdir()
+        self.state_root.symlink_to(moved,target_is_directory=True)
+        self.assert_failure(self.invoke('abort','--team','demo'),'abort')
+        self.assertEqual(self.calls(),[])
+
+    def test_mutable_counters_do_not_invalidate_binding_startup_hashes(self):
+        self.team_fixture()
+        self.config['next_task_id']=42
+        self.config['config_generation']=9
+        self.config['workers'][0]['assigned_tasks']=['1','2']
+        self.write_team()
+        result,data=self.invoke('resume','--team','demo')
+        self.assertEqual(result.returncode,0,data)
+        self.assertEqual(self.runtime_calls(),[['team','resume',INTERNAL]])
+        self.assertEqual(self.calls('team')[0]['state_root'],str(self.state_root))
+        run=json.loads((self.run_dir/'run.json').read_text())
+        self.assertEqual(run['binding_state'],'accepted')
+        self.assertEqual(run['binding_digest'],hashlib.sha256((self.run_dir/'team-bound.json').read_bytes()).hexdigest())
+
+    def test_binding_json_key_order_is_not_identity(self):
+        self.team_fixture()
+        file=self.run_dir/'team-bound.json'
+        file.write_text(json.dumps(json.loads(file.read_text()),sort_keys=True))
+        result,data=self.invoke('status','--team','demo')
+        self.assertEqual(result.returncode,0,data)
+        self.assertEqual(data['evidence']['status'],'bound')
+
+    def test_invalid_binding_status_is_unbound_without_authority(self):
+        self.team_fixture()
+        file=self.run_dir/'team-bound.json'
+        binding=json.loads(file.read_text())
+        binding['go_id']='replayed'
+        file.write_text(json.dumps(binding))
+        result,data=self.invoke('status','--team','demo')
+        self.assertEqual(result.returncode,0,data)
+        self.assertEqual(data['evidence']['status'],'team-unbound')
+        self.assertEqual(self.calls(),[])
+        self.assert_failure(self.invoke('abort','--team','demo'),'abort','IDENTITY_INVALID')
+        self.assertEqual(self.calls(),[])
+
+    def test_pinned_resolver_isolated_root_excludes_alias_and_extra_candidate_blocks(self):
+        executable=shutil.which('omx')
+        module=Path(executable).resolve().parents[1]/'team/team-identity.js' if executable else Path('/missing')
+        if not module.is_file(): self.skipTest('Pinned OMX resolver unavailable')
+        package=json.loads((module.parents[2]/'package.json').read_text())
+        if package['version'] != '0.21.6': self.skipTest('Exact OMX 0.21.6 required')
+        self.team_fixture()
+        (self.team_dir/'phase.json').write_text(json.dumps({'current_phase':'complete'}))
+        other=self.project/'.omx/state/team/evil'
+        other.mkdir(parents=True)
+        alias=dict(self.config,name='evil',display_name=INTERNAL,requested_name=INTERNAL)
+        (other/'config.json').write_text(json.dumps(alias))
+        def resolve():
+            result=subprocess.run(['node','--input-type=module','-e','const m=await import(process.argv[1]); console.log(JSON.stringify({name:m.buildInternalTeamName("demo",{runId:"fixture"}),resolved:m.resolveTeamNameForCurrentContext(process.argv[2],process.argv[3],JSON.parse(process.argv[4]))}));',module.as_uri(),INTERNAL,str(self.project),json.dumps({'OMX_TEAM_STATE_ROOT':str(self.state_root)})],capture_output=True,text=True,check=True)
+            return json.loads(result.stdout)
+        self.assertEqual(resolve(),{'name':INTERNAL,'resolved':INTERNAL})
+        self.assertEqual(self.invoke('await','--team','demo','--timeout-ms','1')[0].returncode,0)
+        self.assertEqual(self.calls('team')[0]['state_root'],str(self.state_root))
+        extra=self.state_root/'team/evil'
+        shutil.copytree(other,extra)
+        self.assertEqual(resolve()['resolved'],'evil')
+        self.log.write_text('')
+        self.assert_failure(self.invoke('abort','--team','demo'),'abort','IDENTITY_INVALID')
+        self.assertEqual(self.calls(),[])
+
+    def test_shutdown_timeout_is_uncertain_with_sixty_second_bound(self):
+        self.team_fixture()
+        self.env['PCAOM_TEST_SCENARIO']='shutdown-timeout'
+        data=self.assert_failure(self.invoke('abort','--team','demo'),'abort','COMMAND_TIMEOUT')
+        self.assertEqual(data['command_evidence']['timeout_ms'],60000)
+        self.assertEqual(json.loads((self.run_dir/'run.json').read_text())['state'],'shutdown_uncertain')
+        self.log.write_text('')
+        self.assert_failure(self.invoke('abort','--team','demo'),'abort')
+        self.assertEqual(self.runtime_calls(),[])
+
+    def test_shutdown_requires_frozen_workers_gone(self):
+        self.team_fixture()
+        self.env['PCAOM_TEST_SCENARIO']='shutdown-worker-left'
+        self.assert_failure(self.invoke('abort','--team','demo'),'abort')
+        self.assertEqual(json.loads((self.run_dir/'run.json').read_text())['state'],'shutdown_uncertain')
+
     def test_await_timeout_does_not_launch_codex_or_send_tmux_keys(self):
         self.team_fixture()
         for extra,cursor in [((),'e1'),(('--after-event-id','explicit'),'explicit')]:
@@ -287,7 +469,7 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(data['evidence']['cursor'],cursor)
             args=self.runtime_calls()[-1]
             self.assertEqual(args[:4],['team','api','await-event','--input'])
-            self.assertEqual(json.loads(args[4]),{'team_name':'demo','after_event_id':cursor,'timeout_ms':100,'poll_ms':100,'wakeable_only':True})
+            self.assertEqual(json.loads(args[4]),{'team_name':INTERNAL,'after_event_id':cursor,'timeout_ms':100,'poll_ms':100,'wakeable_only':True})
             self.assertEqual(args[5:],['--json'])
         self.assertEqual(self.calls('send-keys'),[])
         self.assertFalse(any(c['program']=='codex' for c in self.calls()))
@@ -324,7 +506,7 @@ class BridgeTests(unittest.TestCase):
         self.team_fixture()
         result,data=self.invoke('resume','--team','demo')
         self.assertEqual(result.returncode,0,data)
-        self.assertEqual(self.runtime_calls(),[['team','resume','demo']])
+        self.assertEqual(self.runtime_calls(),[['team','resume',INTERNAL]])
         self.log.write_text('')
         self.env['PCAOM_TEST_SCENARIO']='pane-pid-changed'
         self.assert_failure(self.invoke('resume','--team','demo'),'resume')
@@ -343,23 +525,24 @@ class BridgeTests(unittest.TestCase):
         self.final_fixture()
         result,data=self.invoke('finalize','--team','demo')
         self.assertEqual(result.returncode,0,data)
-        self.assertEqual(self.runtime_calls(),[['team','shutdown','demo']])
+        self.assertEqual(self.runtime_calls(),[['team','shutdown',INTERNAL]])
         self.assertEqual(json.loads((self.run_dir/'run.json').read_text())['state'],'finalized')
         self.assertEqual((self.run_dir/'final-handoff.md').read_text(),'Synthetic final handoff')
         self.assertEqual(self.calls('kill-window'),[])
 
-    def test_finalize_failed_shutdown_preserves_evidence_and_can_retry(self):
+    def test_finalize_failed_shutdown_preserves_evidence_and_refuses_retry(self):
         self.team_fixture()
         self.final_fixture()
         self.env['PCAOM_TEST_SCENARIO']='shutdown-error'
         self.assert_failure(self.invoke('finalize','--team','demo'),'finalize','COMMAND_FAILED')
         manifest=json.loads((self.run_dir/'run.json').read_text())
-        self.assertEqual(manifest['state'],'go_submitted')
+        self.assertEqual(manifest['state'],'shutdown_uncertain')
         self.assertIn('shutdown_diagnostic',manifest)
         proof=(self.run_dir/'final-evidence.json').read_bytes()
         self.env['PCAOM_TEST_SCENARIO']='accepted'
-        result,data=self.invoke('finalize','--team','demo')
-        self.assertEqual(result.returncode,0,data)
+        self.log.write_text('')
+        self.assert_failure(self.invoke('finalize','--team','demo'),'finalize')
+        self.assertEqual(self.runtime_calls(),[])
         self.assertEqual(proof,(self.run_dir/'final-evidence.json').read_bytes())
 
     def test_frozen_identity_rejects_replacement_and_symlink(self):
@@ -368,7 +551,7 @@ class BridgeTests(unittest.TestCase):
         self.log.write_text('')
         self.config['created_at']='2026-09-28T00:00:00Z'
         self.write_team()
-        self.assert_failure(self.invoke('abort','--team','demo'),'abort')
+        self.assert_failure(self.invoke('abort','--team','demo'),'abort','IDENTITY_INVALID')
         self.config['created_at']='2026-09-27T00:00:00Z'
         self.write_team()
         regular=self.team_dir/'config-real.json'
@@ -415,13 +598,13 @@ class BridgeTests(unittest.TestCase):
         self.final_fixture()
         self.env['PCAOM_TEST_SCENARIO']='bad-prefix'
         self.assert_failure(self.invoke('finalize','--team','demo'),'finalize')
-        self.assertEqual(json.loads((self.run_dir/'run.json').read_text())['state'],'go_submitted')
+        self.assertEqual(json.loads((self.run_dir/'run.json').read_text())['state'],'shutdown_uncertain')
 
     def test_abort_uses_exact_team_identity_and_preserves_supervisor_window(self):
         self.team_fixture()
         result,data=self.invoke('abort','--team','demo')
         self.assertEqual(result.returncode,0,data)
-        self.assertEqual(self.runtime_calls(),[['team','shutdown','demo','--force','--confirm-issues']])
+        self.assertEqual(self.runtime_calls(),[['team','shutdown',INTERNAL,'--force','--confirm-issues']])
         self.assertEqual(json.loads((self.run_dir/'run.json').read_text())['state'],'aborted')
         self.assertEqual(self.calls('kill-window'),[])
 
@@ -430,7 +613,7 @@ class BridgeTests(unittest.TestCase):
         journal=self.team_dir/'.membership-task-transaction.json'
         journal.write_text('{}')
         for cmd in ['status','resume','finalize','abort']:
-            self.assert_failure(self.invoke(cmd,'--team','demo'),cmd)
+            self.assert_failure(self.invoke(cmd,'--team','demo'),cmd,'IDENTITY_INVALID')
         journal.unlink()
         self.env['OMX_STATE_ROOT']='/unowned'
         self.assert_failure(self.invoke('abort','--team','demo'),'abort')
@@ -514,11 +697,11 @@ class BridgeTests(unittest.TestCase):
             data=self.assert_failure(self.start(),'preflight')
             self.assertIn('version',data['error'],data)
 
-    def test_preflight_exact_team_collision_without_runtime_commands(self):
+    def test_start_ignores_teams_outside_exclusive_root(self):
         state = self.project/'.omx/state/team/demo'
         state.mkdir(parents=True)
-        self.assert_failure(self.start(),'preflight')
-        self.assertEqual(self.calls('new-window'), [])
+        self.assertEqual(self.start()[0].returncode,0)
+        self.assertEqual(len(self.calls('new-window')),1)
         self.assertEqual([c for c in self.calls() if c['program'] == 'omx' and c['args'] != ['--version']], [])
 
     def test_dead_or_fatal_leader_never_receives_handoff(self):

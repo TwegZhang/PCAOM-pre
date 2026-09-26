@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 // Experimental one-shot bridge; fake CLI tests are not runtime capability evidence.
 // Pane identity/liveness precedes handoff; the Leader writes a scoped file ACK.
-// No unrelated active-Team discovery is asserted. Pinned OMX status invokes
-// activity recording/monitoring, and read-config may migrate state; neither is
-// a read-only preflight. Only filesystem collision evidence is consulted here.
+// Never resolve shared-root aliases. The Leader binds the actual internal name
+// inside a run-exclusive root. Pinned OMX status invokes monitoring and
+// read-config may migrate state; passive reads use neither surface.
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { isDeepStrictEqual } from 'node:util';
 
 const secret = process.env.DEEPSEEK_API_KEY;
 const secrets = new Set(secret ? [secret] : []);
@@ -29,8 +30,8 @@ const positiveInteger = value => Number.isSafeInteger(value) && value > 0;
 const positiveDecimal = value => matches(value,/^[1-9][0-9]*$/) && positiveInteger(Number(value));
 const absolutePath = value => typeof value === 'string' && path.isAbsolute(value) && path.normalize(value) === value && !value.includes('\0');
 function run(program, args, options = {}) {
-  const {privateOutput = false, ...spawnOptions} = options;
-  const timeout = deadline ? Math.max(1, Math.min(commandTimeout, deadline - Date.now())) : commandTimeout;
+  const {privateOutput = false, timeout:requestedTimeout = commandTimeout, ...spawnOptions} = options;
+  const timeout = deadline ? Math.max(1, Math.min(requestedTimeout, deadline - Date.now())) : requestedTimeout;
   // Resolve against the trusted caller PATH even while a restoration client
   // intentionally omits PATH or imports the previous session's different PATH.
   const executable = (process.env.PATH ?? '').split(path.delimiter).map(dir => path.join(dir,program)).find(candidate => {
@@ -124,13 +125,13 @@ function panes(session) {
     return {session, window_id, pane_id, name, dead, command, server:{socket_path,pid,start_time}};
   });
 }
-function assertExactIdentity(manifest) {
+function assertExactIdentity(manifest, allowExtra = false) {
   const current = panes(manifest.session);
   requireThat(manifest.server && current.every(p => JSON.stringify(p.server) === JSON.stringify(manifest.server)), 'Tmux server generation changed');
   const owned = current.filter(p => p.session === manifest.session && p.window_id === manifest.window_id);
   requireThat(manifest.window_id !== manifest.supervisor_window_id && owned.some(p => p.pane_id === manifest.leader_pane_id), 'Run identity changed');
   requireThat(current.some(p => p.session === manifest.session && p.window_id === manifest.supervisor_window_id && p.pane_id === manifest.supervisor_pane_id), 'Supervisor identity changed');
-  requireThat(JSON.stringify(owned.map(p => p.pane_id).sort()) === JSON.stringify([...manifest.pane_ids].sort()), 'Run pane set changed');
+  requireThat(allowExtra ? manifest.pane_ids.every(id => owned.some(p => p.pane_id === id)) : JSON.stringify(owned.map(p => p.pane_id).sort()) === JSON.stringify([...manifest.pane_ids].sort()), 'Run pane set changed');
   return owned;
 }
 function secureDirectory(root, target) {
@@ -205,20 +206,11 @@ function preflight(root, options) {
   requireThat(!spec.includes(secret), 'Spec contains credential');
   return {specPath, spec};
 }
-function assertNoTeamCollision(root, team) {
+function assertNoTeamCollision() {
   // Pinned state-root.js resolves these overrides before <cwd>/.omx/state.
   // Alternate roots require separately proven scope; never infer it here.
   for (const key of ['OMX_TEAM_STATE_ROOT','OMX_ROOT','OMX_STATE_ROOT','OMX_TEAM_WORKER','OMX_TEAM_INTERNAL_WORKER']) {
     requireThat(!process.env[key]?.trim(), `Ambiguous Team context: ${key}`);
-  }
-  const target = path.join(root,'.omx/state/team',team);
-  let current = root;
-  for (const part of ['.omx','state','team',team]) {
-    current = path.join(current,part);
-    let stat;
-    try { stat = fs.lstatSync(current); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
-    requireThat(stat.isDirectory() && !stat.isSymbolicLink(), 'Ambiguous Team state path');
-    requireThat(current !== target, 'Exact Team state collision');
   }
 }
 function capture(pane, lines = 100) { return run('tmux', ['capture-pane','-p','-t',pane,'-S',`-${lines}`]); }
@@ -359,18 +351,23 @@ function start(root, options) {
   requireThat(!fs.existsSync(directory) && !fs.existsSync(contextPath), 'Existing run/context collision');
   secureDirectory(root,path.dirname(directory));
   fs.mkdirSync(directory,{mode:0o700});
+  const runId = randomUUID();
+  const stateRoot = path.join(root,'.omx-pcaom-team-state',runId);
+  secureDirectory(root,path.dirname(stateRoot));
+  fs.mkdirSync(stateRoot,{mode:0o700});
   secureDirectory(root,path.dirname(contextPath));
   const context = `# Approved execution context\nSpec: ${specPath}\nSHA256: ${specDigest}\nWorkspace: ${root}\nWorkers: ${options.workers}\n\n${spec}`;
   atomicWrite(contextPath,context);
   const manifestPath = path.join(directory,'run.json');
-  const manifest = {schema_version:1,team,project_root:root,server:supervisor[0].server,session:supervisor[0].session,supervisor_window_id:supervisor[0].window_id,supervisor_pane_id:supervisor[0].pane_id,profile:'pcaom-ds41',spec_path:specPath,spec_digest:specDigest,context_path:contextPath,context_digest:digest(context),state:'starting'};
+  const manifest = {schema_version:1,team,run_id:runId,state_root:stateRoot,state_root_identity:directoryIdentity(stateRoot),project_root:root,server:supervisor[0].server,session:supervisor[0].session,supervisor_window_id:supervisor[0].window_id,supervisor_pane_id:supervisor[0].pane_id,profile:'pcaom-ds41',spec_path:specPath,spec_digest:specDigest,context_path:contextPath,context_digest:digest(context),state:'starting'};
   let published = false;
   const buffers = [];
   let primary;
   try {
     stage = 'launch';
     withLaunchEnvironment(manifest, () => {
-      const result = run('tmux',['new-window','-d','-t',manifest.session,'-n',windowName,'-c',root,'-e','OMX_TEAM_WORKER_CLI=codex','-e','OMX_TEAM_WORKER_LAUNCH_ARGS=--profile pcaom-ds41','-P','-F','#{session_id}\t#{window_id}\t#{pane_id}','codex --profile pcaom-ds41'], {env:{...process.env,OMX_TEAM_WORKER_CLI:'codex',OMX_TEAM_WORKER_LAUNCH_ARGS:'--profile pcaom-ds41'}}).trim().split('\t');
+      assertStateRoot(manifest);
+      const result = run('tmux',['new-window','-d','-t',manifest.session,'-n',windowName,'-c',root,'-e',`OMX_TEAM_STATE_ROOT=${stateRoot}`,'-e','OMX_TEAM_WORKER_CLI=codex','-e','OMX_TEAM_WORKER_LAUNCH_ARGS=--profile pcaom-ds41','-P','-F','#{session_id}\t#{window_id}\t#{pane_id}','codex --profile pcaom-ds41'], {env:{...process.env,OMX_TEAM_WORKER_CLI:'codex',OMX_TEAM_WORKER_LAUNCH_ARGS:'--profile pcaom-ds41',OMX_TEAM_STATE_ROOT:stateRoot}}).trim().split('\t');
       requireThat(result.length === 3 && result[0] === manifest.session && /^@[0-9]+$/.test(result[1]) && /^%[0-9]+$/.test(result[2]) && !live.some(p => p.window_id === result[1] || p.pane_id === result[2]), 'Invalid newly created identity');
       manifest.window_id = result[1]; manifest.leader_pane_id = result[2]; manifest.pane_ids = [result[2]];
       atomicWrite(manifestPath,JSON.stringify(manifest,null,2)+'\n'); published = true;
@@ -401,14 +398,16 @@ function start(root, options) {
     stage = 'go';
     manifest.go_id = randomUUID();
     manifest.team_started_verified = false;
+    manifest.binding_contract = bindingContract(manifest,directory);
     atomicWrite(manifestPath,JSON.stringify(manifest,null,2)+'\n',true);
     const goBuffer = `pcaom-${team}-go-${manifest.go_id}`;
     buffers.push(goBuffer);
-    const go = {schema_version:1,phase:'go',go_id:manifest.go_id,handoff_id:id,team,context_digest:manifest.context_digest,workers:options.workers};
-    const instruction = `GO JSON: ${JSON.stringify(go)}\nMatch this GO against your accepted handoff and context digest. You are the sole execution-plane fan-out owner. Exactly once for this go_id, create or resume Ultragoal and explicitly start OMX Team with the approved workers. Preserve approved constraints and verification commands. Do not replay this GO or create competing orchestration.`;
+    const go = {schema_version:1,phase:'go',go_id:manifest.go_id,handoff_id:id,team,run_id:runId,state_root:stateRoot,context_digest:manifest.context_digest,workers:options.workers};
+    const instruction = `GO JSON: ${JSON.stringify(go)}\nMatch this GO against your accepted handoff and context digest. You are the sole execution-plane fan-out owner. Exactly once for this go_id, create or resume Ultragoal and explicitly start OMX Team with the approved workers under the inherited exact OMX_TEAM_STATE_ROOT. Capture actual Team started: <internal-name>; the bridge run name is not that internal name. Read the sole exact Team config.json and manifest.v2.json under this state root, then atomically exclusively publish ${path.join(directory,'team-bound.json')} as specified by the binding contract in the installed Skill. Never overwrite a binding or create a second Team in this root. Preserve approved constraints and verification commands. Do not replay this GO or create competing orchestration.\nBinding contract JSON: ${JSON.stringify(manifest.binding_contract)}`;
     run('tmux',['set-buffer','-b',goBuffer,'--',instruction]);
     requireThat(run('tmux',['show-buffer','-b',goBuffer]) === instruction, 'GO named buffer read-back mismatch');
     assertExactIdentity(manifest);
+    assertStateRoot(manifest);
     // From this persisted boundary delivery may be uncertain: never kill or
     // retry automatically, even if the first input command reports failure.
     manifest.state = 'go_submitting';
@@ -460,15 +459,74 @@ function start(root, options) {
 }
 function inspect(root, options) {
   stage = 'inspect';
-  const {manifest} = loadRun(root,options.team);
+  const context = loadRun(root,options.team);
+  const {manifest} = context;
+  const namespace = teamNamespace(context);
+  if (namespace.length && !pathAbsent(path.join(context.directory,'team-bound.json'))) teamSnapshot(context);
+  const authorized = context.frozen ? [manifest.leader_pane_id,...context.frozen.workers.map(worker => worker.pane_id)] : [manifest.leader_pane_id];
   const pane = options.pane === 'leader' ? manifest.leader_pane_id : options.pane;
-  requireThat(manifest.pane_ids.includes(pane), 'Pane not owned by manifest');
-  requireThat(assertExactIdentity(manifest).some(p => p.pane_id === pane), 'Pane not live');
+  requireThat(authorized.includes(pane), 'Pane not owned by bound run');
+  requireThat(assertExactIdentity({...manifest,pane_ids:authorized},namespace.length > 0).some(p => p.pane_id === pane), 'Pane not live');
   return {team:manifest.team,pane,output:capture(pane,options.lines)};
 }
 
 // Pinned 0.21.6 contracts.js. Raw records remain unchanged in passive output.
 const wakeable = new Set(['worker_state_changed','worker_idle','task_completed','task_failed','worker_stopped','message_received','leader_notification_deferred','all_workers_idle','team_leader_nudge','worker_integration_failed','worker_integration_attempt_requested','worker_merge_conflict','worker_cherry_pick_conflict','worker_rebase_conflict','worker_cross_rebase_conflict','worker_stale_diff','worker_stale_heartbeat','worker_stale_stdout']);
+const identityFields = ['name','display_name','requested_name','created_at','leader_cwd','team_state_root','tmux_session','tmux_session_id','tmux_session_created','leader_pane_id','leader_pane_pid','tmux_pane_owner_id','worker_count','workspace_mode','worktree_mode'];
+const workerIdentityFields = ['name','index','role','pid','pane_id','working_dir','worktree_repo_root','worktree_path','worktree_branch','worktree_detached','worktree_created','team_state_root'];
+const equal = isDeepStrictEqual;
+function directoryIdentity(directory) {
+  exactPath(directory);
+  const stat = fs.lstatSync(directory);
+  requireIdentity(stat.isDirectory() && !stat.isSymbolicLink(), 'Regular state directory required');
+  return {dev:stat.dev,ino:stat.ino,uid:stat.uid};
+}
+function assertStateRoot(manifest) {
+  requireIdentity(matches(manifest.run_id,/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/) && manifest.state_root === path.join(manifest.project_root,'.omx-pcaom-team-state',manifest.run_id), 'Run-exclusive canonical state root required');
+  requireIdentity(equal(directoryIdentity(manifest.state_root),manifest.state_root_identity), 'State root replaced');
+}
+function bindingContract(manifest,directory) {
+  return {schema_version:1,adapter:'pcaom-ds41-supervisor',adapter_version:1,omx_version:'0.21.6',run_id:manifest.run_id,bridge_run_name:manifest.team,handoff_id:manifest.handoff_id,go_id:manifest.go_id,context_digest:manifest.context_digest,spec_digest:manifest.spec_digest,project_root:manifest.project_root,run_directory:directory,state_root:manifest.state_root,state_root_identity:manifest.state_root_identity,context_path:manifest.context_path,spec_path:manifest.spec_path,server:manifest.server,session:manifest.session,window_id:manifest.window_id,leader_pane_id:manifest.leader_pane_id,supervisor_window_id:manifest.supervisor_window_id,supervisor_pane_id:manifest.supervisor_pane_id,identity_fields:identityFields,worker_identity_fields:workerIdentityFields};
+}
+function teamNamespace(context) {
+  assertStateRoot(context.manifest);
+  const root = path.join(context.stateRoot,'team');
+  if (pathAbsent(root)) return [];
+  directoryIdentity(root);
+  const entries = fs.readdirSync(root);
+  requireIdentity(entries.length <= 1, 'Isolated Team namespace contains extra candidates');
+  for (const name of entries) {
+    requireIdentity(matches(name,/^[a-z0-9][a-z0-9-]{0,29}$/), 'Malformed Team directory name');
+    directoryIdentity(path.join(root,name));
+    requireIdentity(pathAbsent(path.join(root,name,'.membership-task-transaction.json')), 'Membership transaction journal requires runtime recovery');
+  }
+  return entries;
+}
+function readBinding(context,internalName) {
+  try {
+  const file = path.join(context.directory,'team-bound.json');
+  if (pathAbsent(file)) { const error = new Error('Team is unbound; same proven Leader must publish team-bound.json'); error.code = 'TEAM_UNBOUND'; throw error; }
+  const text = readBounded(file);
+  const binding = JSON.parse(text);
+  const contract = bindingContract(context.manifest,context.directory);
+  delete contract.identity_fields; delete contract.worker_identity_fields;
+  requireIdentity(binding && Object.entries(contract).every(([key,value]) => equal(binding[key],value)), 'Binding replay or run context mismatch');
+  requireIdentity(binding.internal_name === internalName && typeof binding.display_name === 'string' && typeof binding.requested_name === 'string' && matches(binding.config_sha256,/^[a-f0-9]{64}$/) && matches(binding.manifest_sha256,/^[a-f0-9]{64}$/) && typeof binding.bound_at === 'string' && Number.isFinite(Date.parse(binding.bound_at)), 'Malformed binding evidence');
+  const bindingDigest = digest(text);
+  requireIdentity(!context.manifest.binding_digest || context.manifest.binding_digest === bindingDigest, 'Accepted binding changed');
+  requireIdentity(!context.bindingDigest || context.bindingDigest === bindingDigest, 'Binding changed during operation');
+  context.bindingDigest = bindingDigest;
+  context.binding = binding;
+  context.internalName = internalName;
+  context.teamDirectory = path.join(context.stateRoot,'team',internalName);
+  return binding;
+  } catch (error) { error.binding_unverified = true; throw error; }
+}
+function unboundStatus(context,name,reason) {
+  requireIdentity(equal(teamNamespace(context),[name]), 'Unbound namespace changed');
+  const directory = path.join(context.stateRoot,'team',name);
+  return {mode:'passive',status:'team-unbound',run:context.manifest,team_identity:null,unbound_evidence:{config:readJson(path.join(directory,'config.json')),manifest:readJson(path.join(directory,'manifest.v2.json'))},phase:null,tasks:[],workers:[],latest_wakeable_event:null,gaps:[redact(reason),'Same proven Leader must publish exclusive binding or report blocker; no lifecycle authority']};
+}
 function exactPath(file) {
   requireThat(fs.realpathSync(file) === file, 'Path must be canonical and must not traverse symlinks');
   return file;
@@ -494,29 +552,33 @@ function loadRun(root,team) {
   requireIdentity(manifest.server && absolutePath(manifest.server.socket_path) && positiveDecimal(manifest.server.pid) && positiveDecimal(manifest.server.start_time), 'Complete tmux server generation required');
   requireIdentity(manifest.profile === 'pcaom-ds41' && matches(manifest.context_digest,/^[a-f0-9]{64}$/) && matches(manifest.spec_digest,/^[a-f0-9]{64}$/), 'Profile and digests required');
   requireIdentity(absolutePath(manifest.spec_path) && inside(root,manifest.spec_path) && absolutePath(manifest.context_path) && manifest.context_path === path.join(root,'.omx/context',`${team}.md`), 'Canonical project context/spec paths required');
-  const states = ['starting','awaiting_ack','accepted','go_submitting','go_submitted','resumed','finalized','aborted','failed'];
+  const states = ['starting','awaiting_ack','accepted','go_submitting','go_submitted','bound','resumed','shutdown_submitting','shutdown_uncertain','finalized','aborted','failed'];
   requireIdentity(typeof manifest.state === 'string' && states.includes(manifest.state), 'Known run state required');
   const uuid = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
   if (!['starting','failed'].includes(manifest.state)) requireIdentity(matches(manifest.handoff_id,uuid), 'Bound handoff ID required');
-  if (['go_submitting','go_submitted','resumed','finalized','aborted'].includes(manifest.state)) requireIdentity(matches(manifest.go_id,uuid), 'Bound GO ID required');
+  if (['go_submitting','go_submitted','bound','resumed','shutdown_submitting','shutdown_uncertain','finalized','aborted'].includes(manifest.state)) requireIdentity(matches(manifest.go_id,uuid), 'Bound GO ID required');
   requireIdentity(digest(readBounded(manifest.context_path)) === manifest.context_digest, 'Context digest changed');
-  const stateRoot = path.join(root,'.omx/state');
+  assertStateRoot(manifest);
+  const stateRoot = manifest.state_root;
   for (const key of ['OMX_TEAM_STATE_ROOT','OMX_ROOT','OMX_STATE_ROOT']) {
     if (!process.env[key]?.trim()) continue;
     const resolved = key === 'OMX_TEAM_STATE_ROOT' ? path.resolve(root,process.env[key]) : path.resolve(root,process.env[key],'.omx/state');
-    requireThat(manifest.team_identity?.state_root === stateRoot && resolved === stateRoot, `Redirected or unproven state root: ${key}`);
+    requireThat(resolved === stateRoot, `Redirected or unproven state root: ${key}`);
   }
   requireThat(!process.env.OMX_TEAM_WORKER && !process.env.OMX_TEAM_INTERNAL_WORKER, 'Worker context is not supervisor authority');
-  return {root,directory,file,manifest,stateRoot,teamDirectory:path.join(stateRoot,'team',team)};
+  return {root,directory,file,manifest,stateRoot};
 }
 function teamSnapshot(context) {
-  const {root,manifest,stateRoot,teamDirectory} = context;
+  const entries = teamNamespace(context);
+  requireIdentity(entries.length === 1, 'Expected exactly one bound Team');
+  const binding = readBinding(context,entries[0]);
+  const {root,manifest,stateRoot,teamDirectory,internalName} = context;
   exactPath(teamDirectory);
   requireThat(pathAbsent(path.join(teamDirectory,'.membership-task-transaction.json')), 'Membership transaction journal requires runtime recovery; passive bridge refuses');
   const config = readJson(path.join(teamDirectory,'config.json'));
   const teamManifest = readJson(path.join(teamDirectory,'manifest.v2.json'));
   for (const record of [config,teamManifest]) {
-    requireIdentity(matches(record.name,/^[a-z0-9][a-z0-9-]{0,29}$/) && record.name === manifest.team && absolutePath(record.leader_cwd) && record.leader_cwd === root && absolutePath(record.team_state_root) && record.team_state_root === stateRoot, 'Exact Team name/cwd/root required');
+    requireIdentity(matches(record.name,/^[a-z0-9][a-z0-9-]{0,29}$/) && record.name === internalName && absolutePath(record.leader_cwd) && record.leader_cwd === root && absolutePath(record.team_state_root) && record.team_state_root === stateRoot, 'Exact Team name/cwd/root required');
     requireIdentity(sessionId(record.tmux_session_id) && record.tmux_session_id === manifest.session && matches(record.tmux_session,/^[^\s:]+:[0-9]+$/) && positiveDecimal(record.tmux_session_created), 'Complete Team session identity required');
     requireIdentity(paneId(record.leader_pane_id) && record.leader_pane_id === manifest.leader_pane_id && positiveInteger(record.leader_pane_pid) && matches(record.tmux_pane_owner_id,/^[A-Za-z0-9_.:-]{1,200}$/), 'Complete Leader pane/PID/owner required');
     requireIdentity(matches(record.created_at,/^\d{4}-\d{2}-\d{2}T/) && Number.isFinite(Date.parse(record.created_at)), 'Team creation timestamp required');
@@ -524,12 +586,12 @@ function teamSnapshot(context) {
     requireIdentity(Array.isArray(record.workers) && record.workers.length > 0 && record.workers.length <= 32 && record.worker_count === record.workers.length, 'Configured workers required');
     for (const worker of record.workers) requireIdentity(worker && matches(worker.name,/^[a-z0-9][a-z0-9-]{0,63}$/) && paneId(worker.pane_id) && positiveInteger(worker.pid) && positiveInteger(worker.index) && typeof worker.role === 'string' && worker.role.trim() && absolutePath(worker.worktree_path), 'Complete worker identity required');
   }
-  const keys = ['name','created_at','leader_cwd','team_state_root','tmux_session','tmux_session_id','tmux_session_created','leader_pane_id','leader_pane_pid','tmux_pane_owner_id','hud_pane_id','hud_pane_pid','worker_count','workspace_mode','worktree_mode'];
+  const keys = identityFields;
   requireThat(teamManifest.schema_version === 2 && teamManifest.leader?.worker_id === 'leader-fixed', 'Unsupported Team manifest');
   for (const key of keys) requireThat(JSON.stringify(config[key]) === JSON.stringify(teamManifest[key]), `Paired Team identity mismatch: ${key}`);
-  requireThat(config.name === manifest.team && /^[a-z0-9][a-z0-9-]{0,29}$/.test(config.name) && config.leader_cwd === root && config.team_state_root === stateRoot && config.leader_pane_id === manifest.leader_pane_id && config.tmux_session_id === manifest.session && typeof config.created_at === 'string' && config.created_at && typeof config.tmux_session === 'string' && config.tmux_session && typeof config.tmux_pane_owner_id === 'string' && config.tmux_pane_owner_id, 'Unproven Team identity');
+  requireThat(config.name === internalName && /^[a-z0-9][a-z0-9-]{0,29}$/.test(config.name) && config.leader_cwd === root && config.team_state_root === stateRoot && config.leader_pane_id === manifest.leader_pane_id && config.tmux_session_id === manifest.session && typeof config.created_at === 'string' && config.created_at && typeof config.tmux_session === 'string' && config.tmux_session && typeof config.tmux_pane_owner_id === 'string' && config.tmux_pane_owner_id, 'Unproven Team identity');
   requireThat(Array.isArray(config.workers) && config.workers.length > 0 && config.workers.length <= 32 && config.worker_count === config.workers.length, 'Unsupported worker configuration');
-  const workerKeys = ['name','index','role','pid','pane_id','working_dir','worktree_repo_root','worktree_path','worktree_branch','worktree_detached','worktree_created','team_state_root'];
+  const workerKeys = workerIdentityFields;
   const select = (value,fields) => Object.fromEntries(fields.map(key => [key,value[key] ?? null]));
   const workers = config.workers.map(worker => select(worker,workerKeys));
   requireThat(JSON.stringify(workers) === JSON.stringify(teamManifest.workers?.map(worker => select(worker,workerKeys))), 'Worker identities disagree');
@@ -541,11 +603,14 @@ function teamSnapshot(context) {
     if (worker.team_state_root) requireThat(worker.team_state_root === stateRoot, 'Worker state root mismatch');
   }
   const identity = {...select(config,keys),state_root:stateRoot,team_directory:teamDirectory,workers,leader:teamManifest.leader};
-  if (context.frozen ?? manifest.team_identity) requireThat(JSON.stringify(identity) === JSON.stringify(context.frozen ?? manifest.team_identity), 'Frozen Team identity changed');
-  const paneIds = [manifest.leader_pane_id,...workers.map(worker => worker.pane_id),...(config.hud_pane_id ? [config.hud_pane_id] : [])];
+  try {
+    requireIdentity(equal(binding.identity,identity) && binding.created_at === config.created_at && binding.display_name === config.display_name && binding.requested_name === config.requested_name && binding.leader_pane_pid === config.leader_pane_pid && binding.owner_id === config.tmux_pane_owner_id && equal(binding.leader,teamManifest.leader), 'Bound immutable Team identity changed');
+  } catch (error) { error.binding_unverified = true; throw error; }
+  if (context.frozen ?? manifest.team_identity) requireThat(equal(identity,context.frozen ?? manifest.team_identity), 'Frozen Team identity changed');
+  const paneIds = [manifest.leader_pane_id,...workers.map(worker => worker.pane_id)];
   requireThat(new Set(paneIds).size === paneIds.length, 'Duplicate owned panes');
-  assertExactIdentity({...manifest,pane_ids:paneIds});
-  for (const [pane,pid] of [[config.leader_pane_id,config.leader_pane_pid],...workers.map(worker => [worker.pane_id,worker.pid]),...(config.hud_pane_id ? [[config.hud_pane_id,config.hud_pane_pid]] : [])]) {
+  assertExactIdentity({...manifest,pane_ids:paneIds},true);
+  for (const [pane,pid] of [[config.leader_pane_id,config.leader_pane_pid],...workers.map(worker => [worker.pane_id,worker.pid])]) {
     requireThat(Number.isSafeInteger(pid) && pid > 0, 'Missing frozen pane PID');
     const actual = run('tmux',['display-message','-p','-t',pane,'#{session_id}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{@omx_team_pane_owner_id}\t#{session_created}\t#{session_name}:#{window_index}']).trim().split('\t');
     requireThat(JSON.stringify(actual) === JSON.stringify([manifest.session,manifest.window_id,pane,String(pid),config.tmux_pane_owner_id,String(config.tmux_session_created),config.tmux_session]), 'Live Team pane ownership changed');
@@ -568,7 +633,7 @@ function records(context) {
   const workers = context.frozen.workers.map(worker => ({name:worker.name,...Object.fromEntries(['identity','status','heartbeat'].map(name => [name,optional(path.join(context.teamDirectory,'workers',worker.name,`${name}.json`))]))}));
   const eventFile = path.join(context.teamDirectory,'events/events.ndjson');
   const events = pathAbsent(eventFile) ? [] : readBounded(eventFile).split('\n').filter(Boolean).map(line => JSON.parse(line));
-  requireThat(events.every(event => event.team === context.manifest.team && typeof event.event_id === 'string'), 'Event identity mismatch');
+  requireThat(events.every(event => event.team === context.internalName && typeof event.event_id === 'string'), 'Event identity mismatch');
   return {phase:optional(path.join(context.teamDirectory,'phase.json')),tasks,workers,latest_wakeable_event:events.filter(event => wakeable.has(event.type)).at(-1) ?? null};
 }
 function saveRun(context) {
@@ -581,8 +646,17 @@ function freezeEvidence(file,text) {
   if (pathAbsent(file)) atomicWrite(file,text);
   else requireThat(readBounded(file) === text, 'Previously frozen final evidence differs');
 }
-function api(operation,input) {
-  const envelope = JSON.parse(run('omx',['team','api',operation,'--input',JSON.stringify(input),'--json']));
+function teamCommand(context,args,timeout = commandTimeout) {
+  teamSnapshot(context);
+  requireIdentity(equal(readJson(context.file),context.original), 'Run manifest changed before OMX call');
+  try { return run('omx',args,{timeout,env:{...process.env,OMX_TEAM_STATE_ROOT:context.stateRoot}}); }
+  finally {
+    teamSnapshot(context);
+    requireIdentity(equal(readJson(context.file),context.original), 'Run manifest changed after OMX call');
+  }
+}
+function api(context,operation,input) {
+  const envelope = JSON.parse(teamCommand(context,['team','api',operation,'--input',JSON.stringify(input),'--json']));
   requireThat(envelope.schema_version === '1.0' && envelope.command === `omx team api ${operation}` && typeof envelope.timestamp === 'string' && Number.isFinite(Date.parse(envelope.timestamp)) && envelope.ok === true && envelope.operation === operation && envelope.data && typeof envelope.data === 'object' && !Array.isArray(envelope.data), 'Unsupported or unsuccessful OMX API envelope');
   return envelope.data;
 }
@@ -590,7 +664,7 @@ function steer(context,options) {
   const messageId = `${context.manifest.team}-${process.pid}-${randomUUID()}`;
   const ackPath = path.join(context.directory,`steer-${messageId}.json`);
   requireThat(pathAbsent(ackPath), 'Steering ACK collision');
-  const expected = {team:context.manifest.team,message_id:messageId,leader_pane_id:context.manifest.leader_pane_id,context_digest:context.manifest.context_digest};
+  const expected = {team:context.internalName,message_id:messageId,leader_pane_id:context.manifest.leader_pane_id,context_digest:context.manifest.context_digest};
   const body = `Steering message: ${messageId}\nInstruction JSON: ${JSON.stringify(options.message)}\nApply this instruction once per message_id; on duplicate delivery only acknowledge, do not execute twice. Atomically create the exact ACK as an exclusive regular non-symlink file after accepting the instruction.\nAcknowledgment path: ${JSON.stringify(ackPath)}\nAcknowledgment JSON: ${JSON.stringify(expected)}`;
   const evidence = {message_id:messageId,capability:'experimental-one-way-file-ack',transport:'omx-one-way',ack_path:ackPath};
   const waitAck = () => {
@@ -607,8 +681,9 @@ function steer(context,options) {
   };
   let reason;
   try {
-    const data = api('send-message',{team_name:context.manifest.team,from_worker:'supervisor',to_worker:'leader-fixed',body});
+    const data = api(context,'send-message',{team_name:context.internalName,from_worker:'supervisor',to_worker:'leader-fixed',body});
     requireThat(data.dispatch?.ok === true && typeof data.message?.message_id === 'string', 'OMX dispatch not confirmed');
+    requireThat((data.message.team === undefined || data.message.team === context.internalName) && (data.message.from_worker === undefined || data.message.from_worker === 'supervisor') && (data.message.to_worker === undefined || data.message.to_worker === 'leader-fixed'), 'OMX message identity mismatch');
   } catch (error) { reason = redact(error.message).slice(-1000); }
   if (!reason && !waitAck()) reason = 'File ACK timeout; first delivery may have occurred';
   if (reason) {
@@ -646,31 +721,49 @@ function lifecycle(root,command,options) {
   const context = loadRun(root,options.team);
   const {manifest} = context;
   context.original = structuredClone(manifest);
-  if (command !== 'status') requireThat(['go_submitted','resumed'].includes(manifest.state), 'Run state does not authorize lifecycle operation');
-  if (command === 'status' && pathAbsent(context.teamDirectory)) {
+  if (command !== 'status') requireThat(['go_submitted','bound','resumed'].includes(manifest.state), 'Run state does not authorize lifecycle operation');
+  const namespace = teamNamespace(context);
+  if (command === 'status' && !namespace.length) {
+    if (['shutdown_submitting','shutdown_uncertain','finalized','aborted'].includes(manifest.state)) {
+      assertSupervisor(manifest);
+      return {mode:'passive',status:manifest.state,run:manifest,team_identity:manifest.team_identity ?? null,phase:null,tasks:[],workers:[],latest_wakeable_event:null,gaps:['Terminal/uncertain shutdown evidence requires independent review']};
+    }
     requireThat(['go_submitting','go_submitted'].includes(manifest.state), 'Team state absent');
     assertExactIdentity(manifest);
     return {mode:'passive',status:'awaiting-team',run:manifest,team_identity:null,phase:null,tasks:[],workers:[],latest_wakeable_event:null,gaps:['Team startup not verified']};
   }
-  const snapshot = teamSnapshot(context);
+  if (namespace.length && pathAbsent(path.join(context.directory,'team-bound.json'))) {
+    if (command !== 'status') { const error = new Error('Same proven Leader must publish team-bound.json'); error.code = 'TEAM_UNBOUND'; throw error; }
+    return unboundStatus(context,namespace[0],'Binding absent');
+  }
+  let snapshot;
+  try { snapshot = teamSnapshot(context); }
+  catch (error) {
+    if (command === 'status' && error.binding_unverified) return unboundStatus(context,namespace[0],error.message);
+    throw error;
+  }
   const state = records(context);
   teamSnapshot(context);
-  if (command === 'status') return {mode:'passive',run:manifest,team_identity:{...snapshot.identity,config:snapshot.config,manifest:snapshot.manifest},...state,gaps:['Passive file snapshot is not atomic and does not prove runtime health or successful verification']};
+  if (command === 'status') return {mode:'passive',status:['shutdown_submitting','shutdown_uncertain'].includes(manifest.state) ? manifest.state : 'bound',run:manifest,binding_digest:context.bindingDigest,team_identity:{...snapshot.identity,config:snapshot.config,manifest:snapshot.manifest},...state,gaps:['Passive file snapshot is not atomic and does not prove runtime health or successful verification']};
   if (command === 'await') {
     commandTimeout = options['timeout-ms']+5000;
-    const data = api('await-event',{team_name:manifest.team,after_event_id:options['after-event-id'] ?? state.latest_wakeable_event?.event_id ?? '',timeout_ms:options['timeout-ms'],poll_ms:100,wakeable_only:true});
-    requireThat(['timeout','event'].includes(data.status) && typeof data.cursor === 'string' && (data.status === 'timeout' ? data.event === null : data.event?.team === manifest.team && data.event.event_id === data.cursor && wakeable.has(data.event.type)), 'Invalid event wait result');
+    const data = api(context,'await-event',{team_name:context.internalName,after_event_id:options['after-event-id'] ?? state.latest_wakeable_event?.event_id ?? '',timeout_ms:options['timeout-ms'],poll_ms:100,wakeable_only:true});
+    requireThat(['timeout','event'].includes(data.status) && typeof data.cursor === 'string' && (data.status === 'timeout' ? data.event === null : data.event?.team === context.internalName && data.event.event_id === data.cursor && wakeable.has(data.event.type)), 'Invalid event wait result');
     teamSnapshot(context);
     return data;
   }
   manifest.team_identity = context.frozen;
+  manifest.binding_digest = context.bindingDigest;
+  manifest.binding_state = 'accepted';
+  manifest.internal_name = context.internalName;
+  manifest.state = 'bound';
   manifest.team_started_verified = true;
   saveRun(context);
   if (command === 'steer') return steer(context,options);
   if (command === 'resume') {
     teamSnapshot(context);
-    const output = run('omx',['team','resume',manifest.team]);
-    requireThat(output.split(/\r?\n/)[0] === `Team started: ${manifest.team}`, 'Unverified resume result');
+    const output = teamCommand(context,['team','resume',context.internalName]);
+    requireThat(output.split(/\r?\n/)[0] === `Team started: ${context.internalName}`, 'Unverified resume result');
     teamSnapshot(context);
     manifest.state = 'resumed';
     manifest.resume_evidence = {output,at:new Date().toISOString(),worker_resurrection_verified:false};
@@ -680,7 +773,7 @@ function lifecycle(root,command,options) {
   if (command === 'finalize') {
     requireThat(state.tasks.every(task => task.status === 'completed'), 'Every task must be completed');
     const proof = readJson(path.join(context.directory,'leader-final.json'));
-    requireThat(proof.team === manifest.team && proof.context_digest === manifest.context_digest && Array.isArray(proof.verification) && proof.verification.length > 0 && proof.verification.every(item => typeof item.command === 'string' && item.command.trim() && item.result === 'pass' && item.exit_code === 0), 'Aggregate verification evidence incomplete');
+    requireThat(proof.team === context.internalName && proof.context_digest === manifest.context_digest && Array.isArray(proof.verification) && proof.verification.length > 0 && proof.verification.every(item => typeof item.command === 'string' && item.command.trim() && item.result === 'pass' && item.exit_code === 0), 'Aggregate verification evidence incomplete');
     requireThat(typeof proof.handoff_path === 'string' && path.isAbsolute(proof.handoff_path) && inside(root,proof.handoff_path), 'Final handoff outside project');
     const handoff = readBounded(proof.handoff_path);
     requireThat(digest(handoff) === proof.handoff_digest, 'Final handoff digest mismatch');
@@ -690,15 +783,25 @@ function lifecycle(root,command,options) {
     requireThat(records(context).tasks.every(task => task.status === 'completed'), 'Tasks changed before shutdown');
   }
   teamSnapshot(context);
+  manifest.state = 'shutdown_submitting';
+  saveRun(context);
   try {
-    const output = run('omx',['team','shutdown',manifest.team,...(command === 'abort' ? ['--force','--confirm-issues'] : [])]);
-    requireThat(output.split(/\r?\n/)[0] === `Team shutdown complete: ${manifest.team}`, 'Unverified shutdown result');
+    teamSnapshot(context);
+    const output = run('omx',['team','shutdown',context.internalName,...(command === 'abort' ? ['--force','--confirm-issues'] : [])],{timeout:60000,env:{...process.env,OMX_TEAM_STATE_ROOT:context.stateRoot}});
+    requireThat(output.split(/\r?\n/)[0] === `Team shutdown complete: ${context.internalName}`, 'Unverified shutdown result');
+    requireIdentity(equal(readJson(context.file),context.original), 'Run changed during shutdown');
+    assertStateRoot(manifest);
+    readBinding(context,context.internalName);
+    requireThat(teamNamespace(context).length === 0 && pathAbsent(context.teamDirectory), 'Shutdown did not remove exact Team directory');
+    const remaining = panes(manifest.session);
+    requireThat(!context.frozen.workers.some(worker => remaining.some(pane => pane.pane_id === worker.pane_id)), 'Shutdown left frozen Worker panes live');
     assertSupervisor(manifest);
     manifest.state = command === 'abort' ? 'aborted' : 'finalized';
     manifest.shutdown_evidence = {output,at:new Date().toISOString(),forced:command === 'abort',official_review:'pending'};
     saveRun(context);
     return {state:manifest.state,...manifest.shutdown_evidence};
   } catch (error) {
+    manifest.state = 'shutdown_uncertain';
     manifest.shutdown_diagnostic = redact(error.message).slice(-2000);
     saveRun(context);
     throw error;

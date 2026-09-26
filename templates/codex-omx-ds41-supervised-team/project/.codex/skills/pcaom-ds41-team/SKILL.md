@@ -80,6 +80,12 @@ and verification commands. It creates exactly one DS41 window,
 `codex --profile pcaom-ds41` Leader. The trusted launcher sets
 `OMX_TEAM_WORKER_CLI=codex` and
 `OMX_TEAM_WORKER_LAUNCH_ARGS=--profile pcaom-ds41` for DS41 workers.
+It also creates the exclusive canonical directory
+`<project>/.omx-pcaom-team-state/<run_id>` and sets `OMX_TEAM_STATE_ROOT`
+on the Leader window. OMX propagates that exact root to Workers. The run
+manifest freezes its path and filesystem dev/ino/uid; replacement or symlink
+substitution fails closed. This two-level layout preserves pinned OMX API cwd
+derivation (`dirname(dirname(state_root))` is the project root).
 
 Require interactive startup evidence before delivering context. Use a fresh
 named-buffer for the handoff: load the exact text into a uniquely named tmux
@@ -97,7 +103,7 @@ separate matching GO. The bridge validates this ACK and the singleton pane/serve
 identity before recording `accepted`.
 
 A second distinct verified named-buffer carries GO bound to `go_id`, `handoff_id`,
-Team, context digest, and worker count. It authorizes the DS41 Leader, as sole
+bridge run name, unique `run_id`, isolated root, context digest, and worker count. It authorizes the DS41 Leader, as sole
 fan-out owner, to create or resume Ultragoal and start OMX Team exactly once.
 The bridge persists `go_submitting` before any GO input and `go_submitted` only
 after successful submission. This proves transport submission only; Team start
@@ -106,6 +112,37 @@ From `go_submitting`, failures preserve uncertain delivery diagnostics and never
 automatically kill the window, including input or buffer-cleanup failures.
 Before that boundary, cleanup requires fresh exact singleton pane, server
 generation, and supervisor identity. Leave the supervisor intact.
+
+The bridge `--team` argument is only the bridge run name used for lookup under
+`.omx/pcaom-supervisor/`; it is not OMX's hashed internal Team name. After startup,
+the same DS41 Leader captures the actual `Team started: <internal-name>` output
+and reads the sole `team/<internal-name>/config.json` and `manifest.v2.json` in
+the isolated root. Before supervised lifecycle actions, it atomically and
+exclusively publishes `<run-directory>/team-bound.json` (temporary file plus
+no-replace link, then remove temporary file). Never overwrite or reconstruct
+a binding from a display-name search.
+
+Use GO's `Binding contract JSON` (also `run.json.binding_contract`) as follows:
+
+- Copy all its fixed fields unchanged: schema/adapter/OMX version; run_id,
+  bridge_run_name, handoff_id, go_id; context/spec digests and paths; canonical
+  project/run/state paths and state-root dev/ino/uid; server socket/pid/start,
+  session/window, Leader and supervisor pane/window identities.
+- Remove `identity_fields` and `worker_identity_fields` from the published
+  object. Use these lists to build `identity`: select each listed config field,
+  using JSON null for absent optional fields; then add `state_root`,
+  `team_directory`, ordered `workers` projections, and `leader` from the manifest.
+  Config and manifest must agree on each projected field and worker identity.
+- Add `internal_name`, actual `display_name` and `requested_name`, `created_at`,
+  ISO `bound_at`, `leader_pane_pid`, `owner_id` (tmux_pane_owner_id), `leader`,
+  and `identity`. Add `config_sha256` and `manifest_sha256` of the exact startup
+  file bytes. These digests are Leader startup evidence, not lifetime equality
+  gates: normal mutable counters, task assignments, and next-task IDs may change.
+
+The bridge validates this record against the run, isolated namespace, fresh
+paired Team files and tmux ownership. Mutating commands then persist its digest
+and `binding_state: accepted`; passive status/await/inspect validate in memory.
+The immutable identity must remain equal throughout every operation.
 
 Official Codex does not start either workflow on the Leader's behalf. Use OMX's
 existing task, mailbox, worktree, and lifecycle interfaces; the bridge owns no
@@ -119,10 +156,17 @@ diagnostics. `--startup-timeout-ms` bounds the ACK/GO startup sequence.
 tasks, worker records and wakeable event log. Do not call top-level OMX status
 or await: both invoke monitoring and can assign work or integrate worktrees.
 OMX API read-config, read-manifest, list-tasks and get-summary also have
-recovery/migration/snapshot writes and are not passive readers. `inspect`
-captures only a pane already owned by the run manifest. Neither command
+recovery/migration/snapshot writes and are not passive readers. Before Team
+binding, `inspect` authorizes only the frozen Leader pane. A bound active run
+allows that Leader and config/manifest-agreed Worker panes with verified PIDs
+in the same server/session/window. Extra HUD/unowned panes are ignored, never
+authorized for capture; changed Worker identities are never adopted. Neither command
 delivers instructions or mutates lifecycle state. Absent Team state after GO
-is reported as `awaiting-team`, not verified startup. Reads are bounded to
+is reported as `awaiting-team`, not verified startup. A sole Team without its
+binding is `team-unbound` and provides direct read-only evidence only. Ask the
+same proven Leader to publish the exact exclusive binding or report a blocker;
+do not fabricate a recovered binding, start another Team, or invoke lifecycle
+commands. Reads are bounded to
 1 MiB per file and 1000 tasks; oversized evidence fails closed.
 
 `await` invokes only `omx team api await-event` with `wakeable_only:true`,
@@ -139,7 +183,7 @@ OMX send-message from `supervisor` to `leader-fixed`. The sender label is
 unauthenticated; reverse supervisor mailbox is unsupported in OMX 0.21.6.
 Capability stays `experimental-one-way-file-ack`, never mailbox round-trip
 verified. `ACK:<message_id>` denotes an exact file ACK under the run directory:
-the Leader atomically creates the specified JSON containing team, message_id,
+the Leader atomically creates the specified JSON containing team (actual internal name), message_id,
 leader_pane_id and context_digest. A successful API envelope and nested
 dispatch.ok establish transport submission only. `--ack-timeout-ms` bounds
 each ACK wait to 1–30000 ms (default 5000).
@@ -154,14 +198,18 @@ does not establish mailbox supervision.
 
 ## Resume, finalize, and abort
 
-All lifecycle operations freeze/revalidate the exact internal Team name, project
-state root, creation time, Leader cwd/pane/PID, tmux generation/session/window,
-owner token and configured worker panes/worktrees. Symlinks, aliases and pending
-membership transaction journals fail closed. Environment root overrides require
-an already-persisted matching canonical root. Status may inspect `go_submitting`;
-await/steer/resume/finalize/abort require `go_submitted` or `resumed`. Never replay
-uncertain GO. Status cannot persist a new identity; mutating commands freeze the
-first verified Team identity in the run manifest and reject later changes.
+All lifecycle operations require the Leader's binding and revalidate exact
+internal name, isolated root identity, creation time, Leader cwd/pane/PID,
+tmux generation/session/window, owner token and configured worker panes/worktrees.
+The root must have exactly one safe Team directory: additional candidates,
+including terminal aliases, malformed entries, symlinks and membership journals
+fail before invocation. Aliases in other roots do not participate. Every OMX
+API/CLI call receives the actual internal name and exact `OMX_TEAM_STATE_ROOT`,
+with binding/root/Team/tmux checks before and after. Shutdown instead checks the
+terminal removal conditions below. Root environment overrides must match this
+isolated root. Status may inspect `go_submitting`; await/steer/resume/finalize/abort
+require a valid binding and `go_submitted`, `bound` or `resumed`. Never replay
+uncertain GO. Passive commands never write binding acceptance state.
 
 `resume` invokes exact `omx team resume <internal-name>` after preflight and
 checks its success prefix and fresh Team/generation evidence. OMX resume mutates and monitors;
@@ -170,13 +218,22 @@ dead worker resurrection. Missing identity blocks rather than creating a Team.
 
 For `finalize`, all tasks must be `completed`; pending, blocked, in_progress,
 failed and unknown states fail closed. The Leader first checkpoints its work and
-creates regular `leader-final.json` in the run directory with exact team and
+creates regular `leader-final.json` in the run directory with exact internal team name and
 context_digest, a nonempty verification array of {command, result:"pass",
 exit_code:0}, plus absolute project handoff_path and its SHA256 handoff_digest.
 The bridge freezes final-handoff.md and final-evidence.json before invoking
 `omx team shutdown <internal-name>` without force. Shutdown failure preserves
 evidence/diagnostics without claiming completion. Leader evidence is not
 independent official review, which remains pending after shutdown.
+
+Shutdown uses a separate 60000 ms subprocess bound and persists
+`shutdown_submitting` before invocation. Timeout, signal, command error or
+incomplete teardown records `shutdown_uncertain`; never automatically retry,
+force, or claim completion. Success requires successful exact command completion,
+unchanged run/binding/state-root identities, removal of the exact Team directory,
+absence of all frozen Worker panes, and preservation of the supervisor. A printed
+success prefix alone is insufficient. Finalized/aborted is recorded only after
+these checks; retained evidence supports Human/Leader recovery of uncertain cases.
 
 After the execution lifecycle is closed, official Codex independently re-reads
 the workspace and diff, reruns the Spec's exact verification commands, and

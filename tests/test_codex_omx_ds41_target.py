@@ -156,6 +156,8 @@ env_key_instructions = "Set DEEPSEEK_API_KEY in the trusted launcher environment
             "unauthenticated", "reverse supervisor mailbox is unsupported",
             "resume mutates and monitors", "leader-final.json",
             "all tasks must be `completed`", "--force --confirm-issues",
+            "team-bound.json", ".omx-pcaom-team-state/<run_id>",
+            "shutdown_uncertain", "60000 ms", "bridge run name",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, text)
