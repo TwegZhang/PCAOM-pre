@@ -96,8 +96,9 @@ function renderSource(sourcePath, options) {
   const text = bytes.toString("utf8");
   requireValid(text.split(MARKER).length === 2, "Profile must contain exactly one catalog marker");
   const catalog = resolve(options.codexHome, "model-catalogs/pcaom-deepseek-models.json");
-  // The marker is inside a TOML basic string; JSON string escaping also covers path characters here.
-  return Buffer.from(text.replace(MARKER, () => JSON.stringify(catalog).slice(1, -1)));
+  // TOML basic strings also require escaping DEL, which JSON leaves literal.
+  const escapedCatalog = JSON.stringify(catalog).slice(1, -1).replaceAll("\u007f", "\\u007f");
+  return Buffer.from(text.replace(MARKER, () => escapedCatalog));
 }
 
 function prepareOperations(bundleRoot, manifest, options) {

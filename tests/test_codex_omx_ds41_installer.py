@@ -2,9 +2,15 @@ import hashlib
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    tomllib = None
 
 
 BUNDLE = Path(__file__).resolve().parents[1] / "templates/codex-omx-ds41-supervised-team"
@@ -88,6 +94,18 @@ class CodexOmxDs41InstallerTests(unittest.TestCase):
         json.loads((self.codex_home / "model-catalogs/pcaom-deepseek-models.json").read_text())
         for op in data["operations"]:
             self.assertEqual(op["digest"], hashlib.sha256(Path(op["destination"]).read_bytes()).hexdigest())
+
+    def test_profile_escapes_del_in_catalog_path(self):
+        self.codex_home = self.root / "codex\x7fhome"
+        self.codex_home.mkdir()
+        result = self.run_installer(*self.args())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        profile = (self.codex_home / "pcaom-ds41.config.toml").read_text()
+        catalog = str((self.codex_home / "model-catalogs/pcaom-deepseek-models.json").resolve())
+        self.assertNotIn("\x7f", profile)
+        self.assertIn('model_catalog_json = "' + catalog.replace("\x7f", "\\u007f") + '"', profile)
+        if tomllib is not None:
+            self.assertEqual(tomllib.loads(profile)["model_catalog_json"], catalog)
 
     def test_invalid_arguments_write_nothing(self):
         variants = [self.args() + ["--unknown"], self.args() + ["--dry-run", "--dry-run"],
