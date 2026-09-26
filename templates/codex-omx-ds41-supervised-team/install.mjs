@@ -130,11 +130,15 @@ function prepareOperations(bundleRoot, manifest, options) {
   });
 }
 
-function atomicWrite(destination, bytes) {
+function atomicWrite(destination, bytes, mutation) {
   mkdirSync(dirname(destination), { recursive: true });
   const temporary = `${destination}.pcaom-${randomUUID()}.tmp`;
   try {
     writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx" });
+    if (mutation) {
+      const stats = lstatSync(temporary);
+      mutation.resultIdentity = `${stats.dev}:${stats.ino}`;
+    }
     renameSync(temporary, destination);
   } finally {
     try {
@@ -148,6 +152,7 @@ function atomicWrite(destination, bytes) {
 const NAME = "codex-omx-ds41-supervised-team";
 const written = [];
 const rollbackProblems = [];
+const rollbackConflicts = [];
 
 function existingBytes(root, destination) {
   validateDestination(root, destination);
@@ -224,15 +229,19 @@ function transaction(actions, verify) {
       if (action.action === "receipt") verify();
       const before = snapshots.get(action.destination);
       if (action.action !== "delete" && sameBytes(before, action.bytes)) continue;
-      touched.push({ ...action, before });
+      const mutation = { ...action, before, resultIdentity: null };
+      touched.push(mutation);
       for (let path = dirname(action.destination); path !== action.root; path = dirname(path)) {
         if (identity(path) === null) createdDirectories.add(path);
       }
       if (action.action === "delete") unlinkSync(action.destination);
-      else atomicWrite(action.destination, action.bytes);
+      else atomicWrite(action.destination, action.bytes, mutation);
       written.push(action.destination);
       snapshots.set(action.destination, action.action === "delete" ? null : action.bytes);
-      for (let path = action.destination; path !== action.root; path = dirname(path)) identities.set(path, identity(path));
+      identities.set(action.destination, mutation.resultIdentity);
+      for (let path = dirname(action.destination); path !== action.root; path = dirname(path)) {
+        if (identities.get(path) === null) identities.set(path, identity(path));
+      }
       requireValid(sameBytes(existingBytes(action.root, action.destination), snapshots.get(action.destination)),
         `Write verification failed: ${action.destination}`);
     }
@@ -256,6 +265,14 @@ function transaction(actions, verify) {
           const expected = identities.get(path);
           requireValid(expected === null || identity(path) === expected, `Rollback identity changed: ${path}`);
           if (path === action.root) break;
+        }
+        const current = existingBytes(action.root, action.destination);
+        if (sameBytes(current, action.before)) continue;
+        const transactionBytes = action.action === "delete" ? null : action.bytes;
+        if (!sameBytes(current, transactionBytes) ||
+          (current !== null && identity(action.destination) !== action.resultIdentity)) {
+          rollbackConflicts.push(action.destination);
+          throw new Error("Concurrent change prevents rollback");
         }
         if (action.before === null) {
           if (existingBytes(action.root, action.destination) !== null) unlinkSync(action.destination);
@@ -378,6 +395,6 @@ try {
   // OS and JSON parser messages can contain user content; emit only fixed diagnostics or codes.
   const reason = error.code || (error instanceof SyntaxError ? "Invalid JSON" : error.message);
   emit(process.stderr, { ok: false, error: rollbackProblems.length ? "rollback-failed" : "validation-or-operation-failed",
-    reason, written, rollbackProblems });
+    reason, written, rollbackProblems, rollbackConflicts });
   process.exitCode = 1;
 }

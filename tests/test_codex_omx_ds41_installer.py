@@ -408,6 +408,52 @@ class CodexOmxDs41InstallerTests(unittest.TestCase):
         self.fails_unchanged(*self.args())
         self.fails_unchanged('uninstall', *self.args()[1:])
 
+    def assert_concurrent_change_preserved(self, command, upgrade=False):
+        if command == 'uninstall' or upgrade:
+            self.install_ok()
+        if upgrade:
+            source = self.bundle / 'codex/deepseek-models.json'
+            source.write_text(source.read_text() + '\n')
+        condition = ('action.action === "write" && action.destination.endsWith("pcaom-deepseek-models.json")'
+                     if upgrade else 'written.length === 1')
+        self.inject('written.push(action.destination);',
+                    'written.push(action.destination); if (' + condition + ') { '
+                    'writeFileSync(action.destination + ".concurrent", "third-party content"); '
+                    'renameSync(action.destination + ".concurrent", action.destination); }')
+        result = self.run_installer(command, *self.args()[1:])
+        self.assertNotEqual(result.returncode, 0)
+        diagnostic = json.loads(result.stderr)
+        target = Path(diagnostic['written'][-1])
+        self.assertTrue(target.is_file(), 'concurrent leaf must survive rollback')
+        self.assertEqual(target.read_bytes(), b'third-party content')
+        self.assertEqual(diagnostic['error'], 'rollback-failed')
+        self.assertIn(str(target), diagnostic['rollbackProblems'])
+        self.assertIn(str(target), diagnostic['rollbackConflicts'])
+        self.assertTrue(diagnostic['reason'])
+
+    def test_fresh_install_preserves_concurrent_replacement_during_rollback(self):
+        self.assert_concurrent_change_preserved('install')
+
+    def test_upgrade_preserves_concurrent_replacement_during_rollback(self):
+        self.assert_concurrent_change_preserved('install', upgrade=True)
+
+    def test_uninstall_preserves_concurrent_recreation_during_rollback(self):
+        self.assert_concurrent_change_preserved('uninstall')
+
+    def test_rollback_preserves_replacement_with_identical_transaction_bytes(self):
+        self.inject('written.push(action.destination);',
+                    'written.push(action.destination); if (written.length === 1) { '
+                    'writeFileSync(action.destination + ".concurrent", action.bytes); '
+                    'renameSync(action.destination + ".concurrent", action.destination); }')
+        result = self.run_installer(*self.args())
+        self.assertNotEqual(result.returncode, 0)
+        diagnostic = json.loads(result.stderr)
+        target = Path(diagnostic['written'][0])
+        self.assertTrue(target.is_file())
+        self.assertEqual(target.read_bytes(), (self.bundle / 'codex/deepseek-models.json').read_bytes())
+        self.assertEqual(diagnostic['error'], 'rollback-failed')
+        self.assertIn(str(target), diagnostic['rollbackConflicts'])
+
 
 if __name__ == "__main__":
     unittest.main()
