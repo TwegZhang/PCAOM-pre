@@ -117,6 +117,35 @@ env_key_instructions = "Set DEEPSEEK_API_KEY in the trusted launcher environment
             with self.subTest(required=required):
                 self.assertIn(required, text)
 
+    def test_skill_defines_supervisor_commands_and_ownership_contract(self):
+        text = self.read_required("project/.codex/skills/pcaom-ds41-team/SKILL.md")
+        self.assertTrue(text.startswith("---\nname: pcaom-ds41-team\n"))
+        commands = {
+            "start": "--spec FEATURE_SPEC.md --workers 3",
+            "status": "--team <exact-team>",
+            "await": "--team <exact-team> --timeout-ms 60000",
+            "steer": '--team <exact-team> --message "<instruction>"',
+            "inspect": "--team <exact-team> --pane leader",
+            "resume": "--team <exact-team>",
+            "finalize": "--team <exact-team>",
+            "abort": "--team <exact-team>",
+        }
+        for command, arguments in commands.items():
+            with self.subTest(command=command):
+                self.assertIn(f"$pcaom-ds41-team {command} {arguments}", text)
+                self.assertIn(
+                    f"node .codex/skills/pcaom-ds41-team/scripts/supervisor-bridge.mjs {command} {arguments}",
+                    text,
+                )
+        for required in (
+            "DS41 Codex Leader is the only execution-plane fan-out owner",
+            "Official Codex must not edit code while DS41 Team is active",
+            "named-buffer", "no daemon", "ACK:<message_id>",
+            "BLOCKED_ARCHITECTURE", "BLOCKED_POLICY_CONFLICT",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, text)
+
 
 if __name__ == "__main__":
     unittest.main()
