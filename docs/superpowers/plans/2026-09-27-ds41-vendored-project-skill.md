@@ -10,6 +10,8 @@ configuration.
 - On a fresh clone, accept matching project files without overwriting them.
 - Install or upgrade project files when PCAOM is the source of the change, so
   Git exposes the resulting reviewable diff.
+- Accept project files already updated by Git to the current bundle, and rely
+  on Git rather than installer backups for their history.
 - Never delete project-scoped files during uninstall.
 - Continue managing the model catalog, standalone Profile, and paired receipts.
 - Keep the existing CLI and receipt schema; add no new mode or lock file.

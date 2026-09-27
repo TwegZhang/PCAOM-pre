@@ -103,7 +103,9 @@ node install.mjs uninstall --project /absolute/project --codex-home /absolute/co
 
 Installation rejects mismatched project Skill files, but accepts an identical
 repository copy on a fresh clone. Install and upgrade may write project Skill
-files so Git exposes a reviewable diff. Uninstall removes only machine-local
+files so Git exposes a reviewable diff; when Git has already updated them to the
+current bundle, installation adopts that exact copy. Git history replaces
+installer backups for project files. Uninstall removes only machine-local
 Codex files and paired receipts; it preserves project-scoped Skill files.
 Neither command starts Codex or a Team.
 

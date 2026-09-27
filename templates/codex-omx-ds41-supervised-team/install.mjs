@@ -396,7 +396,8 @@ try {
     const bytes = existingBytes(destinationRoot(operation.scope, options), operation.destination);
     const validExisting = old
       ? (options.command === "uninstall" && operation.scope === "project") ||
-        (bytes !== null && sha256(bytes) === old.files[index].sha256)
+        (bytes !== null && (sha256(bytes) === old.files[index].sha256 ||
+          (options.command === "install" && operation.scope === "project" && sameBytes(bytes, operation.bytes))))
       : operation.scope === "project" ? bytes === null || sameBytes(bytes, operation.bytes) : bytes === null;
     requireValid(validExisting,
       `Unmanaged or modified destination: ${operation.destination}`);
@@ -409,6 +410,7 @@ try {
   const actions = [];
   if (options.command === "install" && old && old.bundle_digest !== bundleDigest(files)) {
     for (const [index, operation] of operations.entries()) {
+      if (operation.scope === "project") continue;
       const root = destinationRoot(operation.scope, options);
       const prefix = operation.scope === "project" ? ".pcaom/backups" : "pcaom-backups";
       const destination = scopedPath(root, `${prefix}/${NAME}/${old.bundle_digest}/${files[index].destination}`);

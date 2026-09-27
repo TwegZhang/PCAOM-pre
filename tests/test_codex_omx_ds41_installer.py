@@ -99,6 +99,19 @@ class CodexOmxDs41InstallerTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.snapshot(), before)
 
+    def test_install_accepts_repository_skill_already_updated_to_current_bundle(self):
+        self.install_ok()
+        source = self.bundle / "project/.codex/skills/pcaom-ds41-team/SKILL.md"
+        source.write_bytes(source.read_bytes() + b"\n<!-- repository upgrade -->\n")
+        destination = self.project / ".codex/skills/pcaom-ds41-team/SKILL.md"
+        destination.write_bytes(source.read_bytes())
+        result = self.run_installer(*self.args())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = json.loads(self.receipts()[0].read_text())
+        record = next(record for record in receipt["files"]
+                      if record["destination"].endswith("SKILL.md"))
+        self.assertEqual(record["sha256"], hashlib.sha256(destination.read_bytes()).hexdigest())
+
     def test_uninstall_preserves_repository_skill(self):
         self.install_ok()
         project_files = {path: content for path, content in self.snapshot().items()
@@ -286,13 +299,15 @@ class CodexOmxDs41InstallerTests(unittest.TestCase):
         source.write_bytes(source.read_bytes() + b'\n// upgraded\n')
         dry_run = self.run_installer(*self.args(), '--dry-run')
         self.assertEqual(dry_run.returncode, 0, dry_run.stderr)
-        self.assertEqual(len([a for a in json.loads(dry_run.stdout)['actions'] if a['action'] == 'backup']), 4)
+        self.assertEqual(len([a for a in json.loads(dry_run.stdout)['actions'] if a['action'] == 'backup']), 2)
         self.assertEqual(self.snapshot(), before)
         self.install_ok()
         backups = {}
         for record in old['files']:
-            root = self.project if record['scope'] == 'project' else self.codex_home
-            prefix = '.pcaom/backups' if record['scope'] == 'project' else 'pcaom-backups'
+            if record['scope'] == 'project':
+                continue
+            root = self.codex_home
+            prefix = 'pcaom-backups'
             backup = root / prefix / 'codex-omx-ds41-supervised-team' / old['bundle_digest'] / record['destination']
             self.assertEqual(backup.read_bytes(), before[str(root / record['destination'])])
             backups[str(backup)] = backup.read_bytes()
