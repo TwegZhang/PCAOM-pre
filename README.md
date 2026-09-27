@@ -13,7 +13,7 @@ deterministic reference compiler/emitter 尚未实现；profiler、Project IR va
 | Target bundle | 当前能力与证据边界 |
 | --- | --- |
 | [larry-dsh-headless](templates/larry-dsh-headless/README.md) | `runtime-smoke-verified` 仅覆盖上述三项，见 [历史 observation](docs/observations/2026-09-25-larry-dsh-runtime-smoke.md)；真实实现、Team、恢复和 dogfood 未验证。 |
-| [codex-omx-ds41-supervised-team](templates/codex-omx-ds41-supervised-team/README.md) | 静态 bundle、installer、Skill、Bridge 已实现；整体 `generated-unverified`，Bridge `experimental-unverified`，provider/Team/worktree/恢复/最终审查均 `runtime-unverified`。只有后续 observation 才能逐项晋升。 |
+| [codex-omx-ds41-supervised-team](templates/codex-omx-ds41-supervised-team/README.md) | 整体仍为 `generated-unverified`；Profile/installer 已达 `config-verified`，Team/worktree/最终审查已达 `runtime-smoke-verified`。Bridge 仍为 `experimental-unverified`，Ultragoal、resume/恢复和 dogfood 未验证。 |
 
 已完成：
 
@@ -55,7 +55,8 @@ deterministic reference compiler/emitter 尚未实现；profiler、Project IR va
 12. [Superpowers / OMX Study](docs/research/superpowers-omx-study.md)
 13. [DeepSeek Harness Capability Study](docs/research/dsh-capability-study.md)
 14. [Larry DSH Runtime Observation](docs/observations/2026-09-25-larry-dsh-runtime-smoke.md)
-15. [Phased Plan](docs/superpowers/plans/2026-09-19-pcaom-v0.md)
+15. [Codex + OMX + DS41 Runtime Observation](docs/observations/2026-09-27-codex-omx-ds41-runtime-smoke.md)
+16. [Phased Plan](docs/superpowers/plans/2026-09-19-pcaom-v0.md)
 
 原始交接材料位于 [PCAOM-handoff-2026-09-19](PCAOM-handoff-2026-09-19/README.md)，用于追溯研究来源，不应直接替代归一化文档。
 
