@@ -3,6 +3,8 @@ model_provider = "deepseek"
 model_reasoning_effort = "high"
 forced_login_method = "api"
 web_search = "disabled"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
 model_catalog_json = "__PCAOM_MODEL_CATALOG_PATH__"
 
 [model_providers.deepseek]
@@ -11,3 +13,10 @@ base_url = "https://api.deepseek.com/"
 wire_api = "responses"
 env_key = "DEEPSEEK_API_KEY"
 env_key_instructions = "Set DEEPSEEK_API_KEY in the trusted launcher environment."
+
+[tui]
+screen_reader_detection_done = true
+hide_full_access_warning = true
+
+[projects."__PCAOM_PROJECT_PATH__"]
+trust_level = "trusted"

@@ -29,6 +29,8 @@ const paneId = value => matches(value,/^%[0-9]+$/);
 const positiveInteger = value => Number.isSafeInteger(value) && value > 0;
 const positiveDecimal = value => matches(value,/^[1-9][0-9]*$/) && positiveInteger(Number(value));
 const absolutePath = value => typeof value === 'string' && path.isAbsolute(value) && path.normalize(value) === value && !value.includes('\0');
+const workerLaunchArgs = '--profile pcaom-ds41 --model deepseek-flash -c model_reasoning_effort="high"';
+const hasExactOutputLine = (output, expected) => output.split(/\r?\n/).filter(line => line === expected).length === 1;
 function run(program, args, options = {}) {
   const {privateOutput = false, timeout:requestedTimeout = commandTimeout, ...spawnOptions} = options;
   const timeout = deadline ? Math.max(1, Math.min(requestedTimeout, deadline - Date.now())) : requestedTimeout;
@@ -151,32 +153,37 @@ function atomicWrite(file, text, replace = false) {
     else fs.linkSync(temporary, file); // Exclusive publication: unmanaged files never overwritten.
   } finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
 }
-function validateProfile(home) {
+function validateProfile(home, root) {
   const text = readRegular(path.join(home,'pcaom-ds41.config.toml'));
   requireThat(!text.includes(secret), 'Profile contains credential');
+  const projectSection = `projects.${JSON.stringify(root)}`;
   const expected = {
-    '': {model:'deepseek-flash', model_provider:'deepseek', model_reasoning_effort:'high', forced_login_method:'api', web_search:'disabled', model_catalog_json:path.join(home,'model-catalogs/pcaom-deepseek-models.json')},
+    '': {model:'deepseek-flash', model_provider:'deepseek', model_reasoning_effort:'high', forced_login_method:'api', web_search:'disabled', approval_policy:'never', sandbox_mode:'danger-full-access', model_catalog_json:path.join(home,'model-catalogs/pcaom-deepseek-models.json')},
     'model_providers.deepseek': {name:'DeepSeek', base_url:'https://api.deepseek.com/', wire_api:'responses', env_key:'DEEPSEEK_API_KEY', env_key_instructions:'Set DEEPSEEK_API_KEY in the trusted launcher environment.'},
+    'tui': {screen_reader_detection_done:true, hide_full_access_warning:true},
+    [projectSection]: {trust_level:'trusted'},
   };
   let section = '';
   const seen = new Set();
-  let providerSeen = false;
+  const sections = new Set();
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
     if (trimmed.startsWith('[')) {
-      requireThat(trimmed === '[model_providers.deepseek]' && !providerSeen, 'Unknown or duplicate profile section');
-      section = 'model_providers.deepseek'; providerSeen = true; continue;
+      requireThat(trimmed.endsWith(']'), 'Unknown or duplicate profile section');
+      const header = trimmed.slice(1,-1);
+      requireThat(header !== '' && Object.hasOwn(expected,header) && !sections.has(header), 'Unknown or duplicate profile section');
+      section = header; sections.add(section); continue;
     }
-    const entry = /^([a-z_]+)\s*=\s*("(?:[^"\\]|\\.)*")$/.exec(trimmed);
+    const entry = /^([a-z_]+)\s*=\s*("(?:[^"\\]|\\.)*"|true)$/.exec(trimmed);
     requireThat(entry, 'Unsupported profile syntax');
     const [,key,encoded] = entry;
     const identity = section+'.'+key;
     requireThat(!seen.has(identity) && Object.hasOwn(expected[section],key), 'Duplicate or misplaced profile key');
-    requireThat(JSON.parse(encoded) === expected[section][key], `Invalid profile ${key}`);
+    requireThat((encoded === 'true' ? true : JSON.parse(encoded)) === expected[section][key], `Invalid profile ${key}`);
     seen.add(identity);
   }
-  requireThat(seen.size === 11 && providerSeen, 'Incomplete profile');
+  requireThat(seen.size === 16 && sections.size === 3, 'Incomplete profile');
   const catalogPath = expected[''].model_catalog_json;
   requireThat(path.isAbsolute(catalogPath), 'Catalog path must be absolute');
   const catalog = JSON.parse(readRegular(catalogPath));
@@ -193,7 +200,7 @@ function preflight(root, options) {
       : output === expected;
     requireThat(matches, `Exact ${program} version required: ${expected}`);
   }
-  validateProfile(process.env.CODEX_HOME);
+  validateProfile(process.env.CODEX_HOME, root);
   readRegular(path.join(root, '.codex/skills/pcaom-ds41-team/SKILL.md'));
   const specPath = path.resolve(options.spec);
   const spec = readRegular(specPath);
@@ -204,6 +211,7 @@ function preflight(root, options) {
   const commands = verification?.match(/^```(?:sh|bash)\r?\n([\s\S]*?)^```\s*$/m)?.[1];
   requireThat(commands?.split(/\r?\n/).some(line => line.trim() && !line.trim().startsWith('#')), 'Executable verification command required');
   requireThat(!spec.includes(secret), 'Spec contains credential');
+  requireThat(run('git',['status','--porcelain=v1','--untracked-files=all']).trim() === '', 'OMX Team requires a clean Git workspace');
   return {specPath, spec};
 }
 function assertNoTeamCollision() {
@@ -367,7 +375,7 @@ function start(root, options) {
     stage = 'launch';
     withLaunchEnvironment(manifest, () => {
       assertStateRoot(manifest);
-      const result = run('tmux',['new-window','-d','-t',manifest.session,'-n',windowName,'-c',root,'-e',`OMX_TEAM_STATE_ROOT=${stateRoot}`,'-e','OMX_TEAM_WORKER_CLI=codex','-e','OMX_TEAM_WORKER_LAUNCH_ARGS=--profile pcaom-ds41','-P','-F','#{session_id}\t#{window_id}\t#{pane_id}','codex --profile pcaom-ds41'], {env:{...process.env,OMX_TEAM_WORKER_CLI:'codex',OMX_TEAM_WORKER_LAUNCH_ARGS:'--profile pcaom-ds41',OMX_TEAM_STATE_ROOT:stateRoot}}).trim().split('\t');
+      const result = run('tmux',['new-window','-d','-t',manifest.session,'-n',windowName,'-c',root,'-e',`OMX_TEAM_STATE_ROOT=${stateRoot}`,'-e','OMX_TEAM_WORKER_CLI=codex','-e',`OMX_TEAM_WORKER_LAUNCH_ARGS=${workerLaunchArgs}`,'-P','-F','#{session_id}\t#{window_id}\t#{pane_id}','codex --profile pcaom-ds41'], {env:{...process.env,OMX_TEAM_WORKER_CLI:'codex',OMX_TEAM_WORKER_LAUNCH_ARGS:workerLaunchArgs,OMX_TEAM_STATE_ROOT:stateRoot}}).trim().split('\t');
       requireThat(result.length === 3 && result[0] === manifest.session && /^@[0-9]+$/.test(result[1]) && /^%[0-9]+$/.test(result[2]) && !live.some(p => p.window_id === result[1] || p.pane_id === result[2]), 'Invalid newly created identity');
       manifest.window_id = result[1]; manifest.leader_pane_id = result[2]; manifest.pane_ids = [result[2]];
       atomicWrite(manifestPath,JSON.stringify(manifest,null,2)+'\n'); published = true;
@@ -403,7 +411,7 @@ function start(root, options) {
     const goBuffer = `pcaom-${team}-go-${manifest.go_id}`;
     buffers.push(goBuffer);
     const go = {schema_version:1,phase:'go',go_id:manifest.go_id,handoff_id:id,team,run_id:runId,state_root:stateRoot,context_digest:manifest.context_digest,workers:options.workers};
-    const instruction = `GO JSON: ${JSON.stringify(go)}\nMatch this GO against your accepted handoff and context digest. You are the sole execution-plane fan-out owner. Exactly once for this go_id, create or resume Ultragoal and explicitly start OMX Team with the approved workers under the inherited exact OMX_TEAM_STATE_ROOT. Capture actual Team started: <internal-name>; the bridge run name is not that internal name. Read the sole exact Team config.json and manifest.v2.json under this state root, then atomically exclusively publish ${path.join(directory,'team-bound.json')} as specified by the binding contract in the installed Skill. Never overwrite a binding or create a second Team in this root. Preserve approved constraints and verification commands. Do not replay this GO or create competing orchestration.\nBinding contract JSON: ${JSON.stringify(manifest.binding_contract)}`;
+    const instruction = `GO JSON: ${JSON.stringify(go)}\nMatch this GO against your accepted handoff and context digest. You are the sole execution-plane fan-out owner. Exactly once for this go_id, create or resume Ultragoal and explicitly start OMX Team with the approved workers under the inherited exact OMX_TEAM_STATE_ROOT. Shell initialization can overwrite inherited worker arguments: in the same shell command that invokes Team, first run export OMX_TEAM_WORKER_CLI=codex and export OMX_TEAM_WORKER_LAUNCH_ARGS='--profile pcaom-ds41 --model deepseek-flash -c model_reasoning_effort="high"'. When the approved Spec requires preserved independent lanes, use the latest matching approved OMX Team DAG and its exact launch hint; use that hint verbatim even when it is role-agnostic, because an explicit single agent type overrides per-node DAG roles and can collapse lanes. Only without a lane-preserving approved hint use the fallback invocation shape omx team ${options.workers}:executor "<approved task summary>". Before publishing the binding, read every generated worker startup script and require both --profile pcaom-ds41 and --model deepseek-flash with no other profile or model. Give one approved lane to each Worker and verify the persisted task ownership before implementation; require DAG-backed decomposition when a lane-preserving Spec supplied it. If OMX cannot preserve the independent lanes, stop and report the mismatch instead of collapsing them. DS41 Workers are terminal execution lanes and must not spawn Codex native subagents or nested orchestration. Capture actual Team started: <internal-name>; the bridge run name is not that internal name. Read the sole exact Team config.json and manifest.v2.json under this state root, then atomically exclusively publish ${path.join(directory,'team-bound.json')} as specified by the binding contract in the installed Skill. Never overwrite a binding or create a second Team in this root. Preserve approved constraints and verification commands. Do not replay this GO or create competing orchestration.\nBinding contract JSON: ${JSON.stringify(manifest.binding_contract)}`;
     run('tmux',['set-buffer','-b',goBuffer,'--',instruction]);
     requireThat(run('tmux',['show-buffer','-b',goBuffer]) === instruction, 'GO named buffer read-back mismatch');
     assertExactIdentity(manifest);
@@ -788,7 +796,7 @@ function lifecycle(root,command,options) {
   try {
     teamSnapshot(context);
     const output = run('omx',['team','shutdown',context.internalName,...(command === 'abort' ? ['--force','--confirm-issues'] : [])],{timeout:60000,env:{...process.env,OMX_TEAM_STATE_ROOT:context.stateRoot}});
-    requireThat(output.split(/\r?\n/)[0] === `Team shutdown complete: ${context.internalName}`, 'Unverified shutdown result');
+    requireThat(hasExactOutputLine(output,`Team shutdown complete: ${context.internalName}`), 'Unverified shutdown result');
     requireIdentity(equal(readJson(context.file),context.original), 'Run changed during shutdown');
     assertStateRoot(manifest);
     readBinding(context,context.internalName);

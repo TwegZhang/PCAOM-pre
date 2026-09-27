@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const OWNER = "pcaom:codex-omx-ds41-supervised-team";
 const MARKER = "__PCAOM_MODEL_CATALOG_PATH__";
+const PROJECT_MARKER = "__PCAOM_PROJECT_PATH__";
 
 function requireValid(condition, message) {
   if (!condition) throw new Error(message);
@@ -95,10 +96,12 @@ function renderSource(sourcePath, options) {
   if (!sourcePath.endsWith("pcaom-ds41.config.toml")) return bytes;
   const text = bytes.toString("utf8");
   requireValid(text.split(MARKER).length === 2, "Profile must contain exactly one catalog marker");
+  requireValid(text.split(PROJECT_MARKER).length === 2, "Profile must contain exactly one project marker");
   const catalog = resolve(options.codexHome, "model-catalogs/pcaom-deepseek-models.json");
   // TOML basic strings also require escaping DEL, which JSON leaves literal.
   const escapedCatalog = JSON.stringify(catalog).slice(1, -1).replaceAll("\u007f", "\\u007f");
-  return Buffer.from(text.replace(MARKER, () => escapedCatalog));
+  const escapedProject = JSON.stringify(options.projectRoot).slice(1, -1).replaceAll("\u007f", "\\u007f");
+  return Buffer.from(text.replace(MARKER, () => escapedCatalog).replace(PROJECT_MARKER, () => escapedProject));
 }
 
 function prepareOperations(bundleRoot, manifest, options) {

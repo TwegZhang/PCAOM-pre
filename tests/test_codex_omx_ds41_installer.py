@@ -16,6 +16,7 @@ else:
 
 BUNDLE = Path(__file__).resolve().parents[1] / "templates/codex-omx-ds41-supervised-team"
 MARKER = "__PCAOM_MODEL_CATALOG_PATH__"
+PROJECT_MARKER = "__PCAOM_PROJECT_PATH__"
 
 
 class CodexOmxDs41InstallerTests(unittest.TestCase):
@@ -87,6 +88,7 @@ class CodexOmxDs41InstallerTests(unittest.TestCase):
             if record["destination"] == "pcaom-ds41.config.toml":
                 catalog = str(self.codex_home / "model-catalogs/pcaom-deepseek-models.json")
                 source = source.replace(MARKER.encode(), catalog.encode())
+                source = source.replace(PROJECT_MARKER.encode(), str(self.project).encode())
             self.assertEqual(destination.read_bytes(), source)
             self.assertEqual(destination.stat().st_mode & 0o777, 0o600)
         actual = [p for root in (self.project, self.codex_home) for p in root.rglob("*") if p.is_file()]
@@ -107,6 +109,22 @@ class CodexOmxDs41InstallerTests(unittest.TestCase):
         self.assertIn('model_catalog_json = "' + catalog.replace("\x7f", "\\u007f") + '"', profile)
         if tomllib is not None:
             self.assertEqual(tomllib.loads(profile)["model_catalog_json"], catalog)
+
+    def test_profile_trusts_only_the_exact_installed_project(self):
+        self.project = self.root / 'project"\x7froot'
+        self.project.mkdir()
+        result = self.run_installer(*self.args())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        profile = (self.codex_home / "pcaom-ds41.config.toml").read_text()
+        self.assertNotIn(PROJECT_MARKER, profile)
+        self.assertNotIn("\x7f", profile)
+        escaped_project = json.dumps(str(self.project))[1:-1].replace("\x7f", "\\u007f")
+        self.assertIn(f'[projects."{escaped_project}"]', profile)
+        if tomllib is not None:
+            parsed = tomllib.loads(profile)
+            self.assertEqual(parsed["projects"], {
+                str(self.project): {"trust_level": "trusted"},
+            })
 
     def test_invalid_arguments_write_nothing(self):
         variants = [self.args() + ["--unknown"], self.args() + ["--dry-run", "--dry-run"],
@@ -141,7 +159,8 @@ class CodexOmxDs41InstallerTests(unittest.TestCase):
 
     def test_profile_requires_exactly_one_marker(self):
         profile = self.bundle / "codex/pcaom-ds41.config.toml"
-        for text in ("no marker", MARKER + MARKER):
+        for text in ("no marker", MARKER + MARKER + PROJECT_MARKER,
+                     MARKER + PROJECT_MARKER + PROJECT_MARKER):
             profile.write_text(text)
             self.assert_failure(self.run_installer(*self.args()))
 

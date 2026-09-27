@@ -9,6 +9,7 @@ from pathlib import Path
 
 BUNDLE = Path(__file__).resolve().parents[1] / 'templates/codex-omx-ds41-supervised-team'
 BRIDGE = BUNDLE / 'project/.codex/skills/pcaom-ds41-team/scripts/supervisor-bridge.mjs'
+PROJECT_MARKER = '__PCAOM_PROJECT_PATH__'
 INTERNAL = 'demo-' + hashlib.sha256(b'fixture').hexdigest()[:8]
 # Synthetic process fixtures mirror pinned version output and tmux pane fields;
 # passing tests do not establish actual runtime/provider startup capability.
@@ -79,6 +80,7 @@ elif p == 'omx':
             import shutil
             shutil.rmtree(pathlib.Path(os.environ['OMX_TEAM_STATE_ROOT'])/'team'/a[2])
             if scenario != 'shutdown-worker-left': (root/'workers').unlink(missing_ok=True)
+        if scenario == 'shutdown-log-prefix': print('[omx:team] shutdown cleanup complete')
         print('wrong' if scenario == 'bad-prefix' else 'Team shutdown complete: '+a[2])
     else: sys.exit('Unexpected OMX runtime command during preflight')
 elif a[0] == 'display-message':
@@ -185,12 +187,23 @@ class BridgeTests(unittest.TestCase):
         self.catalog.parent.mkdir()
         shutil.copyfile(BUNDLE / 'codex/deepseek-models.json', self.catalog)
         self.profile = self.home / 'pcaom-ds41.config.toml'
-        self.profile.write_text((BUNDLE / 'codex/pcaom-ds41.config.toml').read_text().replace('__PCAOM_MODEL_CATALOG_PATH__', str(self.catalog)))
+        self.profile.write_text(
+            (BUNDLE / 'codex/pcaom-ds41.config.toml').read_text()
+            .replace('__PCAOM_MODEL_CATALOG_PATH__', str(self.catalog))
+            .replace(PROJECT_MARKER, str(self.project))
+        )
         self.skill = self.project / '.codex/skills/pcaom-ds41-team/SKILL.md'
         self.skill.parent.mkdir(parents=True)
         self.skill.write_text('synthetic installed Skill')
         self.spec = self.project / 'FEATURE_SPEC.md'
         self.spec.write_text(SPEC)
+        (self.project / '.gitignore').write_text('.omx/\n.omx-pcaom-team-state/\n')
+        subprocess.run(['git', '-C', str(self.project), 'add', '.'], check=True)
+        subprocess.run(
+            ['git', '-C', str(self.project), '-c', 'user.name=PCAOM Test',
+             '-c', 'user.email=pcaom-test@example.invalid', 'commit', '-qm', 'test fixture'],
+            check=True,
+        )
         bin_dir = self.root / 'bin'
         bin_dir.mkdir()
         for name in ['tmux', 'omx', 'codex', 'git']:
@@ -530,6 +543,15 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual((self.run_dir/'final-handoff.md').read_text(),'Synthetic final handoff')
         self.assertEqual(self.calls('kill-window'),[])
 
+    def test_finalize_accepts_exact_shutdown_line_after_runtime_diagnostics(self):
+        self.team_fixture()
+        self.final_fixture()
+        self.env['PCAOM_TEST_SCENARIO']='shutdown-log-prefix'
+        result,data=self.invoke('finalize','--team','demo')
+        self.assertEqual(result.returncode,0,data)
+        self.assertEqual(data['evidence']['state'],'finalized')
+        self.assertIn('Team shutdown complete: '+INTERNAL,data['evidence']['output'])
+
     def test_finalize_failed_shutdown_preserves_evidence_and_refuses_retry(self):
         self.team_fixture()
         self.final_fixture()
@@ -685,6 +707,24 @@ class BridgeTests(unittest.TestCase):
             self.assert_failure(self.start(),'preflight')
             self.assertEqual(self.calls('new-window'), [])
 
+    def test_preflight_requires_clean_git_workspace(self):
+        tracked = self.project / 'tracked.txt'
+        tracked.write_text('baseline')
+        subprocess.run(['git', '-C', str(self.project), 'add', 'tracked.txt'], check=True)
+        subprocess.run(
+            ['git', '-C', str(self.project), '-c', 'user.name=PCAOM Test',
+             '-c', 'user.email=pcaom-test@example.invalid', 'commit', '-qm', 'tracked fixture'],
+            check=True,
+        )
+        for path, content in [(tracked, 'changed'), (self.project / 'untracked.txt', 'new')]:
+            with self.subTest(path=path.name):
+                path.write_text(content)
+                data = self.assert_failure(self.start(), 'preflight')
+                self.assertIn('clean Git workspace', data['error'])
+                self.assertEqual(self.calls('new-window'), [])
+                subprocess.run(['git', '-C', str(self.project), 'clean', '-qf'], check=True)
+                subprocess.run(['git', '-C', str(self.project), 'restore', 'tracked.txt'], check=True)
+
     def test_omx_exact_version_with_diagnostics(self):
         for version in ['oh-my-codex 0.21.6\nNode.js v22.22.2', 'oh-my-codex v0.21.6\nNode.js v22.22.2']:
             self.env['PCAOM_TEST_VERSION'] = version
@@ -766,11 +806,12 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, data)
         create, = self.calls('new-window')
         self.assertIn('ds41-team-demo', create['args'])
+        self.assertFalse(any(arg.startswith('PCAOM_CODEX_TRUST_OVERRIDE=') for arg in create['args']))
         self.assertEqual(create['args'][-1], 'codex --profile pcaom-ds41')
-        self.assertEqual(create['selected_env'], {'OMX_TEAM_WORKER_CLI':'codex','OMX_TEAM_WORKER_LAUNCH_ARGS':'--profile pcaom-ds41'})
+        self.assertEqual(create['selected_env'], {'OMX_TEAM_WORKER_CLI':'codex','OMX_TEAM_WORKER_LAUNCH_ARGS':'--profile pcaom-ds41 --model deepseek-flash -c model_reasoning_effort="high"'})
         before = self.calls()[:self.calls().index(create)]
         for call in before:
-            self.assertIn((call['program'], call['args'][0]), [('git','rev-parse'), ('codex','--version'), ('omx','--version'), ('tmux','-V'), ('tmux','display-message'), ('tmux','list-panes'), ('tmux','show-environment'), ('tmux','show-options'), ('tmux','set-option'), ('tmux','-C')])
+            self.assertIn((call['program'], call['args'][0]), [('git','rev-parse'), ('git','status'), ('codex','--version'), ('omx','--version'), ('tmux','-V'), ('tmux','display-message'), ('tmux','list-panes'), ('tmux','show-environment'), ('tmux','show-options'), ('tmux','set-option'), ('tmux','-C')])
         for call in self.calls('list-panes'):
             self.assertEqual(call['args'][1:4],['-s','-t','$1'])
             self.assertNotIn('-a',call['args'])
@@ -781,6 +822,12 @@ class BridgeTests(unittest.TestCase):
         self.assertIn('END TURN', set_args[-1])
         self.assertIn('Do not start Ultragoal, Team, workers, or implementation', set_args[-1])
         self.assertIn('GO JSON:', go_args[-1])
+        self.assertIn('omx team 2:executor', go_args[-1])
+        self.assertIn('export OMX_TEAM_WORKER_LAUNCH_ARGS=', go_args[-1])
+        self.assertIn('approved OMX Team DAG', go_args[-1])
+        self.assertIn('use that hint verbatim even when it is role-agnostic', go_args[-1])
+        self.assertIn('one approved lane to each Worker', go_args[-1])
+        self.assertIn('must not spawn Codex native subagents', go_args[-1])
         self.assertNotEqual(set_args[2],go_args[2])
         self.assertNotIn('PCAOM_READY', set_args[-1])
         sequence = [set_args, ['show-buffer','-b',set_args[2]], ['send-keys','-t','%2','C-u'], ['paste-buffer','-t','%2','-b',set_args[2],'-p','-d'], ['send-keys','-t','%2','Enter']]
@@ -957,11 +1004,19 @@ class BridgeTests(unittest.TestCase):
 
     def test_profile_rejects_endpoint_sections_duplicates_and_provider(self):
         original=self.profile.read_text()
-        for altered in [original.replace('https://api.deepseek.com/','https://unauthorized.example/'), original+'\nmodel = "deepseek-flash"\n', original.replace('[model_providers.deepseek]','[model_providers.other]'), original.replace('model_provider = "deepseek"','model_provider = "other"'), original+'\n[model_providers.other]\nname = "Other"\n', original.replace('forced_login_method = "api"','forced_login_method = "chatgpt"')]:
+        for altered in [original.replace('https://api.deepseek.com/','https://unauthorized.example/'), original+'\nmodel = "deepseek-flash"\n', original.replace('[model_providers.deepseek]','[model_providers.other]'), original.replace('model_provider = "deepseek"','model_provider = "other"'), original+'\n[model_providers.other]\nname = "Other"\n', original.replace('forced_login_method = "api"','forced_login_method = "chatgpt"'), original.replace('approval_policy = "never"','approval_policy = "on-request"'), original.replace('sandbox_mode = "danger-full-access"','sandbox_mode = "workspace-write"')]:
             self.profile.write_text(altered)
             result,data=self.start()
             self.assert_failure((result,data),'preflight')
             self.assertEqual(self.calls('new-window'),[])
+
+    def test_profile_accepts_preseeded_codex_tui_state(self):
+        profile = self.profile.read_text()
+        if '[tui]' not in profile:
+            profile += '\n[tui]\nscreen_reader_detection_done = true\n'
+        self.profile.write_text(profile)
+        result, data = self.start()
+        self.assertEqual(result.returncode, 0, data)
 
     def test_timeout_rolls_back_only_proven_window(self):
         self.env['PCAOM_TEST_SCENARIO']='timeout'

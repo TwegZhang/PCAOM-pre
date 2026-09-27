@@ -1,11 +1,15 @@
 # Codex + OMX + DS41 supervised Team target
 
 **Current status: `generated-unverified`.** This bundle contains static declarations,
-an implemented installer, downstream Skill, and bounded command bridge;
-passing template tests does not demonstrate provider, Team, worktree, or supervision
-runtime behavior. The supervisor bridge remains `experimental-unverified`.
-Provider, Ultragoal, Team, worktree, resume, shutdown and final review remain
-`runtime-unverified`; fake-adapter tests do not establish real execution.
+an implemented installer, downstream Skill, and bounded command bridge. A disposable
+synthetic run verified the installed Profile/provider startup and the bounded Team,
+worktree, shutdown, and independent-final-review capabilities on the pinned runtime.
+Accordingly, Profile/installer are `config-verified`, while Team/worktree/final review
+are `runtime-smoke-verified`. The supervisor bridge remains
+`experimental-unverified`; the whole Skill, Ultragoal, resume/recovery, dogfood, and
+production behavior remain unverified. Ultragoal and resume/recovery specifically
+remain `runtime-unverified`. See the linked runtime observation for the exact
+evidence and gaps.
 
 The approved [design](../../docs/superpowers/specs/2026-09-26-pcaom-codex-omx-ds41-supervised-team-design.md)
 defines this target. PCAOM generates reviewable artifacts; Codex and OMX own execution.
@@ -34,10 +38,25 @@ $CODEX_HOME/model-catalogs/pcaom-deepseek-models.json
 ```
 
 The installer resolves `__PCAOM_MODEL_CATALOG_PATH__` to an absolute catalog path.
-The profile is a standalone file. Installation must preserve the user's default
-Codex configuration and unrelated project instructions.
+It also resolves `__PCAOM_PROJECT_PATH__` to the one canonical downstream project
+root and records that exact root as trusted in the standalone Profile. The Profile
+preseeds Codex's TUI detection state and uses `approval_policy = "never"` with
+`sandbox_mode = "danger-full-access"`. This is required because the DS41 Leader
+must write Git worktree metadata and connect to the existing tmux Unix socket;
+Codex `workspace-write`, including extra writable roots, does not authorize that
+socket. This is a high-risk automation profile: use it only for explicitly
+authorized repositories on a trusted machine. It does not trust parent directories
+or other projects, but its shell commands are not filesystem-sandboxed. Installation
+must preserve the user's default Codex configuration and unrelated project instructions.
 
 ## Prerequisites and activation
+
+OMX Team starts only from a clean Git workspace. Before invoking the bridge,
+commit or deliberately account for the installed Skill, approved Spec, and any
+approved Team DAG. Add downstream ignore rules for generated `.omx/`,
+`.omx-pcaom-team-state/`, and installer receipts when those artifacts are not
+project-owned. The bridge checks both tracked and untracked changes before it
+creates a DS41 window and fails closed when the workspace is dirty.
 
 The validation baseline is Codex CLI `0.156.1`, oh-my-codex `0.21.6`, and tmux
 `3.7b`. Node.js is required for the installer and bridge. Static tests support
@@ -95,9 +114,24 @@ layout uses two windows in the same session:
 - `ds41-team-<slug>`: an independent `codex --profile pcaom-ds41` Leader, OMX
   worker panes, and HUD. DS41 owns Ultragoal and Team fan-out during implementation.
 
-Workers also use `--profile pcaom-ds41`. The supervisor independently rereads the
-workspace and runs acceptance checks after execution. This topology is a design
-contract pending runtime evidence.
+Workers use `--profile pcaom-ds41 --model deepseek-flash -c
+model_reasoning_effort="high"`; the explicit model prevents OMX from appending a
+different configured default before Codex loads the standalone Profile. Because
+Codex shell initialization can restore a user's global worker arguments, the
+Leader re-exports these exact values in the same shell command that invokes Team
+and verifies every generated startup script before binding. Start
+Team with an explicit executor role (`N:executor`), verify one approved lane per
+Worker before implementation, and do not nest Codex native subagents under DS41
+Workers. Specs that require exact lane preservation also need a matching approved
+OMX PRD/test-spec pair and Team DAG sidecar; legacy text decomposition is not
+accepted as proof of lane ownership. The Leader uses that approved launch hint
+verbatim—even if it omits a shared agent type—so OMX can preserve distinct
+per-node roles. Independent nodes need distinct file/domain and task-text hints,
+because OMX deliberately groups overlapping scopes. The Leader then verifies the
+persisted owners. The supervisor independently rereads the workspace and runs
+acceptance checks after execution. The recorded synthetic r14 observation verifies
+this bounded topology once; other repositories and uncovered lifecycle paths still
+require their own evidence.
 
 ## Supervisor commands and lifecycle
 
@@ -164,7 +198,8 @@ and reports `PASS` or `CHANGES_REQUIRED`; Leader evidence is not final review.
 
 The earlier design's mailbox round-trip and top-level await proposal is not the
 implemented capability. The narrower pinned behavior above and in the Skill
-governs use; real runtime observations are still required.
+governs use; additional runtime observations are still required for uncovered
+capabilities.
 
 ## Catalog and evidence
 
@@ -179,11 +214,13 @@ Status promotion requires fresh, separately recorded evidence:
 
 | Status | Required evidence |
 | --- | --- |
-| `generated-unverified` | Static artifacts and contract checks only; current status. |
+| `generated-unverified` | The overall target remains here while uncovered lifecycle capabilities remain. |
 | `config-verified` | Successful dry-run/install, parsed configuration, correct profile startup model, and version preflight. |
-| `runtime-smoke-verified` | Actual synthetic execution proving both processes/windows, DS41 workers, worktrees, steering/ACK, resume, shutdown, and independent review. |
+| `runtime-smoke-verified` | Per-capability evidence requires its actual synthetic execution; whole-target promotion additionally requires both processes/windows, DS41 workers, worktrees, steering/ACK, resume, shutdown, and independent review. |
 | `dogfood-verified` | Real authorized project acceptance with quality, cost, time, intervention, and rework measurements. |
 
 Record commands, versions, results, and gaps in `docs/observations/` before any
 promotion. Mailbox supervision requires its own round-trip evidence; a fallback
 does not verify the experimental bridge or unrelated runtime capabilities.
+The partial synthetic runtime evidence and per-capability verdict are recorded in
+[the runtime observation](../../docs/observations/2026-09-27-codex-omx-ds41-runtime-smoke.md).

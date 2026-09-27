@@ -35,6 +35,11 @@ Before `start`, establish all of the following:
   If any required line, heading or fence is absent, fail before window creation.
 - An exact downstream workspace/worktree and explainable branch, diff, and
   existing Team state. Preserve existing work and identify lane ownership.
+  OMX Team requires a clean Git workspace before launch. Commit or otherwise
+  deliberately account for the installed Skill, approved Spec, and planning
+  artifacts; ignore generated `.omx/`, `.omx-pcaom-team-state/`, and installer
+  receipt paths as appropriate for the downstream repository. The bridge checks
+  tracked and untracked status and fails before window creation when it is dirty.
 - Explicit authorization covering the context and artifacts sent to DeepSeek.
   Do not infer data-transfer authorization from the presence of a credential.
 - A live tmux session and available Node.js, Codex CLI, and OMX. Check the pinned
@@ -42,7 +47,13 @@ Before `start`, establish all of the following:
   deviations without inheriting verification claims from the baseline.
 - A readable standalone `$CODEX_HOME/pcaom-ds41.config.toml` and resolved model
   catalog selecting `deepseek-flash`, provider `deepseek`, and Responses API.
-  Preserve official Codex's default configuration and subscription identity.
+  The installed Profile must bind `trust_level = "trusted"` to the exact canonical
+  downstream project, preseed TUI detection, and use `approval_policy = "never"`
+  with `sandbox_mode = "danger-full-access"`. OMX Team requires Git metadata writes
+  and access to the existing tmux Unix socket, which `workspace-write` does not
+  provide. Treat this as a high-risk automation profile and use only on an explicitly
+  authorized repository and trusted machine. Preserve official Codex's default
+  configuration and subscription identity; never accept another project path.
 - `DEEPSEEK_API_KEY` is present in the trusted launcher environment and inherited
   by DS41. Check presence without displaying the value; never put it in command
   arguments, handoffs, artifacts, logs, or observations.
@@ -95,13 +106,43 @@ and verification commands. It creates exactly one DS41 window,
 `ds41-team-<slug>`, in the supervisor's tmux session and launches an independent
 `codex --profile pcaom-ds41` Leader. The trusted launcher sets
 `OMX_TEAM_WORKER_CLI=codex` and
-`OMX_TEAM_WORKER_LAUNCH_ARGS=--profile pcaom-ds41` for DS41 workers.
+`OMX_TEAM_WORKER_LAUNCH_ARGS=--profile pcaom-ds41 --model deepseek-flash -c
+model_reasoning_effort="high"` for DS41 workers. The explicit model flag is
+required because OMX resolves a worker model before Codex loads the standalone
+Profile and otherwise can append its configured default model.
+Codex shell initialization can replace inherited variables with a user's global
+default. In the same shell command that runs `omx team`, re-export the exact
+`OMX_TEAM_WORKER_CLI` and `OMX_TEAM_WORKER_LAUNCH_ARGS` values above. Before
+publishing `team-bound.json`, inspect each generated worker startup script and
+require `--profile pcaom-ds41` plus `--model deepseek-flash`, with no competing
+profile or model.
 It also creates the exclusive canonical directory
 `<project>/.omx-pcaom-team-state/<run_id>` and sets `OMX_TEAM_STATE_ROOT`
 on the Leader window. OMX propagates that exact root to Workers. The run
 manifest freezes its path and filesystem dev/ino/uid; replacement or symlink
 substitution fails closed. This two-level layout preserves pinned OMX API cwd
 derivation (`dirname(dirname(state_root))` is the project root).
+
+After GO, invoke Team with an explicit executor role, for example `omx team
+3:executor "<approved task summary>"`. Give one independent approved lane to
+each Worker and verify persisted task ownership before implementation. DS41
+Workers are terminal execution lanes: they must not spawn Codex native
+subagents, nested Teams, or another orchestration layer. If OMX cannot preserve
+the lane split, report the mismatch instead of silently collapsing work onto one
+Worker. These are workflow constraints; runtime smoke must still verify the
+actual model, ownership, panes, and worktrees.
+
+OMX legacy text decomposition can turn an enumerated feature into generic
+implementation/test tasks. When the approved Spec requires exact independent
+lanes, Official Codex must also supply a matching approved OMX planning pair and
+Team DAG sidecar under `.omx/plans/`; the DS41 Leader uses that artifact's exact
+approved launch hint and requires `decomposition_source = "dag_sidecar"` before
+binding. Use the approved hint verbatim even when it is role-agnostic: an
+explicit `N:executor` launch overrides per-node DAG roles and can group multiple
+lanes onto one Worker. Give independent DAG nodes distinct `filePaths`, `domains`,
+subjects, and descriptions; repeated non-stopword hints can intentionally group
+related work on one Worker. Do not claim lane preservation from the natural-language
+task or DAG node count alone; verify the persisted owners.
 
 Require interactive startup evidence before delivering context. Use a fresh
 named-buffer for the handoff: load the exact text into a uniquely named tmux

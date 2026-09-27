@@ -5,13 +5,14 @@
   "runtime_ref": {"codex_cli": "0.156.1", "oh_my_codex": "0.21.6", "tmux": "3.7b"},
   "model": {"id": "deepseek-flash", "family": "DeepSeek V4.1 Flash", "provider": "deepseek", "protocol": "responses"},
   "capabilities": {
-    "profile": "generated-unverified",
-    "installer": "generated-unverified",
+    "profile": "config-verified",
+    "installer": "config-verified",
     "skill": "generated-unverified",
     "supervisor_bridge": "experimental-unverified",
     "ultragoal": "runtime-unverified",
-    "team": "runtime-unverified",
-    "worktree": "runtime-unverified",
-    "final_review": "runtime-unverified"
-  }
+    "team": "runtime-smoke-verified",
+    "worktree": "runtime-smoke-verified",
+    "final_review": "runtime-smoke-verified"
+  },
+  "evidence": ["docs/observations/2026-09-27-codex-omx-ds41-runtime-smoke.md"]
 }

@@ -34,8 +34,8 @@ function execute(executable, args, env = process.env, pythonValidation = false) 
     if (error.code === 'ENOENT') {
       detail = { cause: 'subprocess_not_found', code: 'ENOENT' };
       if (Number.isInteger(error.errno)) detail.errno = error.errno;
-    } else if (pythonValidation && [20, 21, 22].includes(error.status)) {
-      check = { 20: 'toml', 21: 'model', 22: 'catalog-path' }[error.status];
+    } else if (pythonValidation && [20, 21, 22, 23].includes(error.status)) {
+      check = { 20: 'toml', 21: 'model', 22: 'catalog-path', 23: 'project-trust' }[error.status];
       detail = { cause: 'validation_failed' };
     } else {
       detail = { cause: 'subprocess_exit' };
@@ -153,7 +153,9 @@ if data.get("model") != "deepseek-flash":
     raise SystemExit(21)
 if data.get("model_catalog_json") != str(p / "model-catalogs/pcaom-deepseek-models.json"):
     raise SystemExit(22)
-`, codexHome], pythonEnvironment, true);
+if data.get("projects") != {sys.argv[2]: {"trust_level": "trusted"}}:
+    raise SystemExit(23)
+`, codexHome, project], pythonEnvironment, true);
   phase = 'reinstall';
   run('install');
   check = 'identical';

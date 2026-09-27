@@ -61,6 +61,14 @@ class EvidenceVerifierTests(unittest.TestCase):
         profile.write_text(profile.read_text().replace('model = "deepseek-flash"', 'model = "synthetic-wrong-model"'))
         self.failure(self.run_verifier('--bundle', bundle), 'installed-profile', 'model', 'validation_failed')
 
+    def test_profile_project_trust_mutation_fails_under_optimization(self):
+        bundle = self.copied_bundle()
+        profile = bundle / 'codex/pcaom-ds41.config.toml'
+        profile.write_text(profile.read_text().replace('trust_level = "trusted"',
+                                                       'trust_level = "untrusted"'))
+        self.failure(self.run_verifier('--bundle', bundle), 'installed-profile',
+                     'project-trust', 'validation_failed')
+
     def test_missing_python_is_distinct_and_cleans_up(self):
         data = self.failure(self.run_verifier('--python', '/nonexistent/pcaom-python'),
                             'installed-profile', 'python', 'subprocess_not_found')

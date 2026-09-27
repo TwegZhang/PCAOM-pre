@@ -148,6 +148,8 @@ model_provider = "deepseek"
 model_reasoning_effort = "high"
 forced_login_method = "api"
 web_search = "disabled"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
 model_catalog_json = "<installer-resolved-absolute-path>"
 
 [model_providers.deepseek]
@@ -156,10 +158,20 @@ base_url = "https://api.deepseek.com/"
 wire_api = "responses"
 env_key = "DEEPSEEK_API_KEY"
 env_key_instructions = "Set DEEPSEEK_API_KEY in the trusted launcher environment."
+
+[tui]
+screen_reader_detection_done = true
+hide_full_access_warning = true
+
+[projects."<installer-resolved-canonical-project-path>"]
+trust_level = "trusted"
 ```
 
 Compiler 输出机器无关模板；安装器解析实际 `$CODEX_HOME` 后写入绝对 catalog 路径。生成物和安装日志只记录环境变量名，不记录值。
 `forced_login_method = "api"` 只存在于 DS41 Profile overlay 中，用于避免第二个进程误用官方订阅身份；默认官方 Codex会话仍使用原有配置与 ChatGPT 登录。
+安装器还只在该独立 Profile 中信任本次安装的精确 canonical project root，并预置 TUI 检测状态；这是无头 Leader 避免首次启动确认所必需的项目级绑定，不修改默认配置或信任其他目录。`approval_policy = "never"` 与 `sandbox_mode = "danger-full-access"` 是 OMX Team 写 Git worktree 元数据并连接现有 tmux Unix socket 的运行前提；实测 `workspace-write` 即使增加 writable root 仍拒绝该 socket。该 Profile 属于显式高风险自动化面，只能用于已授权仓库和可信机器，不能把项目级 trust 描述成文件系统沙箱。
+
+OMX Team 还要求启动时 Git workspace 干净。Bridge 必须在创建窗口前检查 tracked 与 untracked 状态；下游项目需要提交或明确管理 Skill、Spec 与批准的 DAG，并按项目策略忽略 `.omx/`、`.omx-pcaom-team-state/` 和安装 receipt 等生成状态。Bridge 不自动修改项目 `.gitignore`。
 
 ## 9. 安装器边界
 
