@@ -4,6 +4,7 @@ model_reasoning_effort = "high"
 web_search = "disabled"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
+check_for_update_on_startup = false
 model_catalog_json = "__PCAOM_MODEL_CATALOG_PATH__"
 
 [model_providers.deepseek]

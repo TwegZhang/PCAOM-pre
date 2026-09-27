@@ -139,8 +139,14 @@ elif a[0] == 'send-keys' and a[-1] == 'Enter':
         if scenario == 'go-enter': sys.exit('GO Enter failure')
         if scenario == 'workers-after-go': (root/'workers').touch()
         sys.exit(0)
+    if scenario == 'ack-after-readiness-budget':
+        import re, time
+        ack_path=json.loads(re.search(r'^Acknowledgment path: (.+)$',text,re.M)[1])
+        ack=json.loads(re.search(r'^Acknowledgment JSON: (.+)$',text,re.M)[1])
+        (root/'ack-schedule.json').write_text(json.dumps({'path':ack_path,'ack':ack,'due':time.time()+0.45}))
+        sys.exit(0)
     if scenario == 'submit': sys.exit('submission failed')
-    if scenario in ['accepted','cleanup','bad-ack','stale-ack','previous-env','symlink-ack','early-workers','workers-after-go','go-enter','go-paste']:
+    if scenario in ['accepted','cleanup','bad-ack','stale-ack','previous-env','symlink-ack','early-workers','workers-after-go','go-enter','go-paste','composer-delayed']:
         import re
         text=(root/'buffer').read_text()
         ack_path=json.loads(re.search(r'^Acknowledgment path: (.+)$',text,re.M)[1])
@@ -163,12 +169,32 @@ elif a[0] == 'delete-buffer':
     if scenario in ['cleanup','buffer-cleanup']: sys.exit('buffer cleanup failed')
     (root/'buffer').unlink(missing_ok=True)
 elif a[0] == 'capture-pane':
-    if (root/'entered').exists():
+    count=int((root/'captures').read_text())+1 if (root/'captures').exists() else 1
+    (root/'captures').write_text(str(count))
+    if scenario == 'ack-after-readiness-budget' and not (root/'entered').exists():
+        import time
+        time.sleep(0.20)
+        print('Codex loading' if count < 4 else '› Ask Codex to do anything')
+    elif scenario == 'ack-after-readiness-budget':
+        import time
+        schedule=json.loads((root/'ack-schedule.json').read_text())
+        if time.time() >= schedule['due'] and not pathlib.Path(schedule['path']).exists():
+            pathlib.Path(schedule['path']).write_text(json.dumps(schedule['ack']))
+        print('Leader processing')
+    elif scenario == 'composer-delayed' and count < 3:
+        print('Codex loading')
+    elif scenario == 'update-modal':
+        print('› Ask Codex to do anything')
+        print('Update available · 0.156.1 → 0.157.1')
+        print('1. Update now')
+        print('2. Skip')
+        print('3. Skip until next version')
+    elif (root/'entered').exists():
         text = (root/'buffer').read_text() if (root/'buffer').exists() else ''
         import re
         print(text if scenario == 'echo' else 'Leader processing')
     else:
-        print('Fatal: startup failed' if scenario == 'fatal' else 'Codex interactive composer')
+        print('Fatal: startup failed' if scenario == 'fatal' else '› Ask Codex to do anything')
     print(os.environ.get('DEEPSEEK_API_KEY',''))
 '''
 
@@ -231,7 +257,8 @@ class BridgeTests(unittest.TestCase):
         return result, data
 
     def start(self):
-        timeout = '350' if self.env.get('PCAOM_TEST_SCENARIO') in ['timeout','acceptance','echo'] else '5000'
+        scenario = self.env.get('PCAOM_TEST_SCENARIO')
+        timeout = '1500' if scenario == 'ack-after-readiness-budget' else '350' if scenario in ['timeout','acceptance','echo'] else '5000'
         return self.invoke('start', '--spec', str(self.spec), '--workers', '2', '--team', 'demo', '--startup-timeout-ms', timeout, '--command-timeout-ms', '100' if self.env.get('PCAOM_TEST_SCENARIO') == 'delayed-version' else '5000')
 
     def assert_failure(self, outcome, stage, code='BRIDGE_ERROR'):
@@ -308,6 +335,28 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(before,(self.run_dir/'run.json').read_bytes())
         self.assertEqual(self.runtime_calls(),[])
         self.assertTrue(all(c['program']=='git' or c['program']=='tmux' and c['args'][0] in ['list-panes','display-message'] for c in self.calls()))
+
+    def test_status_accepts_runtime_notice_ledger_beside_single_team(self):
+        self.team_fixture()
+        notice = self.state_root/'team/notice-ledger.json'
+        notice.write_text(json.dumps({'schema_version': 1, 'notices': []}))
+        result, data = self.invoke('status','--team','demo')
+        self.assertEqual(result.returncode, 0, data)
+        self.assertEqual(data['evidence']['tasks'], [self.task])
+
+    def test_status_rejects_malformed_runtime_notice_ledger_as_identity_failure(self):
+        self.team_fixture()
+        (self.state_root/'team/notice-ledger.json').write_text('{')
+        self.assert_failure(self.invoke('status','--team','demo'),
+                            'status','IDENTITY_INVALID')
+
+    def test_status_rejects_symlink_runtime_notice_ledger(self):
+        self.team_fixture()
+        target = self.root/'notice-ledger-target.json'
+        target.write_text(json.dumps({'schema_version': 1, 'notices': []}))
+        (self.state_root/'team/notice-ledger.json').symlink_to(target)
+        self.assert_failure(self.invoke('status','--team','demo'),
+                            'status','IDENTITY_INVALID')
 
     def test_status_awaiting_team_and_uncertain_go(self):
         self.assertEqual(self.start()[0].returncode,0)
@@ -753,6 +802,40 @@ class BridgeTests(unittest.TestCase):
                 self.assertEqual(self.start_stage(), 'readiness')
                 if (self.project/'.omx').exists(): shutil.rmtree(self.project/'.omx')
                 (self.root/'created').unlink(missing_ok=True)
+
+    def test_update_modal_blocks_handoff_and_persists_redacted_capture(self):
+        self.env['PCAOM_TEST_SCENARIO'] = 'update-modal'
+        result, data = self.start()
+        self.assert_failure((result, data), 'readiness', 'LEADER_TUI_BLOCKED')
+        self.assertEqual(self.calls('set-buffer'), [])
+        self.assertEqual(self.calls('send-keys'), [])
+        self.assertEqual([call['args'] for call in self.calls('kill-window')],
+                         [['kill-window', '-t', '@2']])
+        manifest = json.loads((self.project/'.omx/pcaom-supervisor/demo/run.json').read_text())
+        self.assertEqual(manifest['leader_diagnostic_path'],
+                         '.omx/pcaom-supervisor/demo/leader-pane-diagnostic.txt')
+        evidence = self.project / manifest['leader_diagnostic_path']
+        self.assertEqual(evidence.stat().st_mode & 0o777, 0o600)
+        self.assertIn('Update available', evidence.read_text())
+        self.assertIn('[REDACTED]', evidence.read_text())
+        self.assertNotIn(self.env['DEEPSEEK_API_KEY'], evidence.read_text())
+
+    def test_handoff_waits_for_interactive_composer(self):
+        self.env['PCAOM_TEST_SCENARIO'] = 'composer-delayed'
+        result, data = self.start()
+        self.assertEqual(result.returncode, 0, data)
+        calls = self.calls()
+        first_buffer = next(index for index, call in enumerate(calls)
+                            if call['args'][0] == 'set-buffer')
+        captures_before_handoff = [call for call in calls[:first_buffer]
+                                   if call['args'][0] == 'capture-pane']
+        self.assertGreaterEqual(len(captures_before_handoff), 3)
+
+    def test_ack_receives_independent_timeout_budget(self):
+        self.env['PCAOM_TEST_SCENARIO'] = 'ack-after-readiness-budget'
+        result, data = self.start()
+        self.assertEqual(result.returncode, 0, data)
+        self.assertGreaterEqual(len(self.calls('capture-pane')), 5)
 
     def start_stage(self):
         return json.loads((self.project/'.omx/pcaom-supervisor/demo/run.json').read_text())['failure_stage']

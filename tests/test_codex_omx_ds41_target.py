@@ -95,6 +95,7 @@ class CodexOmxDs41TargetTests(unittest.TestCase):
         self.assertEqual(target["evidence"], [
             "docs/observations/2026-09-27-codex-omx-ds41-runtime-smoke.md",
             "docs/observations/2026-09-27-o2-ds41-deployment-auth-regression.md",
+            "docs/observations/2026-09-27-ds41-leader-readiness-regression.md",
         ])
 
     def test_profile_uses_environment_auth_and_separate_profile_file(self):
@@ -105,6 +106,7 @@ model_reasoning_effort = "high"
 web_search = "disabled"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
+check_for_update_on_startup = false
 model_catalog_json = "__PCAOM_MODEL_CATALOG_PATH__"
 
 [model_providers.deepseek]
@@ -128,6 +130,7 @@ trust_level = "trusted"
             "model_reasoning_effort": "high",
             "web_search": "disabled", "approval_policy": "never",
             "sandbox_mode": "danger-full-access",
+            "check_for_update_on_startup": False,
             "model_catalog_json": "__PCAOM_MODEL_CATALOG_PATH__",
             "model_providers": {"deepseek": {
                 "name": "DeepSeek", "base_url": "https://api.deepseek.com/",
@@ -187,7 +190,9 @@ trust_level = "trusted"
         text = self.read_required("README.md")
         for required in ("generated-unverified", "config-verified", "runtime-smoke-verified",
                          "dogfood-verified", "--dry-run", "install.mjs install", "install.mjs uninstall",
-                         "DEEPSEEK_API_KEY", "supervisor", "ds41-team-", "trusted", "$CODEX_HOME"):
+                         "DEEPSEEK_API_KEY", "supervisor", "ds41-team-", "trusted", "$CODEX_HOME",
+                         "check_for_update_on_startup = false", "LEADER_TUI_BLOCKED",
+                         "leader-pane-diagnostic.txt", "notice-ledger.json"):
             with self.subTest(required=required):
                 self.assertIn(required, text)
 
@@ -232,6 +237,9 @@ trust_level = "trusted"
             "all tasks must be `completed`", "--force --confirm-issues",
             "team-bound.json", ".omx-pcaom-team-state/<run_id>",
             "shutdown_uncertain", "60000 ms", "bridge run name",
+            "check_for_update_on_startup = false", "LEADER_TUI_BLOCKED",
+            "leader-pane-diagnostic.txt", "independent readiness and acknowledgment budgets",
+            "notice-ledger.json",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, text)

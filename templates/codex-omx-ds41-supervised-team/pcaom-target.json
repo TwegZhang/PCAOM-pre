@@ -16,6 +16,7 @@
   },
   "evidence": [
     "docs/observations/2026-09-27-codex-omx-ds41-runtime-smoke.md",
-    "docs/observations/2026-09-27-o2-ds41-deployment-auth-regression.md"
+    "docs/observations/2026-09-27-o2-ds41-deployment-auth-regression.md",
+    "docs/observations/2026-09-27-ds41-leader-readiness-regression.md"
   ]
 }

@@ -158,7 +158,7 @@ function validateProfile(home, root) {
   requireThat(!text.includes(secret), 'Profile contains credential');
   const projectSection = `projects.${JSON.stringify(root)}`;
   const expected = {
-    '': {model:'deepseek-flash', model_provider:'deepseek', model_reasoning_effort:'high', web_search:'disabled', approval_policy:'never', sandbox_mode:'danger-full-access', model_catalog_json:path.join(home,'model-catalogs/pcaom-deepseek-models.json')},
+    '': {model:'deepseek-flash', model_provider:'deepseek', model_reasoning_effort:'high', web_search:'disabled', approval_policy:'never', sandbox_mode:'danger-full-access', check_for_update_on_startup:false, model_catalog_json:path.join(home,'model-catalogs/pcaom-deepseek-models.json')},
     'model_providers.deepseek': {name:'DeepSeek', base_url:'https://api.deepseek.com/', wire_api:'responses', env_key:'DEEPSEEK_API_KEY', env_key_instructions:'Set DEEPSEEK_API_KEY in the trusted launcher environment.'},
     'tui': {screen_reader_detection_done:true, hide_full_access_warning:true},
     [projectSection]: {trust_level:'trusted'},
@@ -175,15 +175,15 @@ function validateProfile(home, root) {
       requireThat(header !== '' && Object.hasOwn(expected,header) && !sections.has(header), 'Unknown or duplicate profile section');
       section = header; sections.add(section); continue;
     }
-    const entry = /^([a-z_]+)\s*=\s*("(?:[^"\\]|\\.)*"|true)$/.exec(trimmed);
+    const entry = /^([a-z_]+)\s*=\s*("(?:[^"\\]|\\.)*"|true|false)$/.exec(trimmed);
     requireThat(entry, 'Unsupported profile syntax');
     const [,key,encoded] = entry;
     const identity = section+'.'+key;
     requireThat(!seen.has(identity) && Object.hasOwn(expected[section],key), 'Duplicate or misplaced profile key');
-    requireThat((encoded === 'true' ? true : JSON.parse(encoded)) === expected[section][key], `Invalid profile ${key}`);
+    requireThat((encoded === 'true' ? true : encoded === 'false' ? false : JSON.parse(encoded)) === expected[section][key], `Invalid profile ${key}`);
     seen.add(identity);
   }
-  requireThat(seen.size === 15 && sections.size === 3, 'Incomplete profile');
+  requireThat(seen.size === 16 && sections.size === 3, 'Incomplete profile');
   const catalogPath = expected[''].model_catalog_json;
   requireThat(path.isAbsolute(catalogPath), 'Catalog path must be absolute');
   const catalog = JSON.parse(readRegular(catalogPath));
@@ -311,13 +311,21 @@ function withLaunchEnvironment(manifest, create) {
   if (primary) throw primary;
   return result;
 }
-function waitForLeader(manifest) {
+const updateModal = output => /Update available\s*·[^\n]+/i.test(output) && /Skip until next version/i.test(output);
+const interactiveComposer = output => /(?:^|\n)\s*›\s+Ask Codex to do anything\s*(?:\n|$)/.test(output);
+function waitForLeader(manifest, rememberCapture) {
   while (Date.now() < deadline) {
     const leader = assertExactIdentity(manifest).find(p => p.pane_id === manifest.leader_pane_id);
     requireThat(leader.dead === '0', 'Leader pane exited');
     const output = capture(manifest.leader_pane_id);
+    rememberCapture(output);
     requireThat(!/^(?:fatal\b|error:|error loading|failed to (?:start|load)|.*process exited with code [1-9])/im.test(output), 'Fatal Leader startup output');
-    if (path.basename(leader.command) === 'codex') return;
+    if (updateModal(output)) {
+      const error = new Error('Leader TUI blocked by Codex update prompt');
+      error.code = 'LEADER_TUI_BLOCKED';
+      throw error;
+    }
+    if (path.basename(leader.command) === 'codex' && interactiveComposer(output)) return;
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(50, Math.max(0, deadline-Date.now())));
   }
   throw new Error('Startup timeout or handoff acceptance unverified');
@@ -326,7 +334,7 @@ function pathAbsent(file) {
   try { fs.lstatSync(file); return false; }
   catch (error) { if (error.code === 'ENOENT') return true; throw error; }
 }
-function waitForAcknowledgment(manifest,file,expected) {
+function waitForAcknowledgment(manifest,file,expected,rememberCapture) {
   while (Date.now() < deadline) {
     assertExactIdentity(manifest);
     if (!pathAbsent(file)) {
@@ -336,7 +344,7 @@ function waitForAcknowledgment(manifest,file,expected) {
       assertExactIdentity(manifest);
       return;
     }
-    capture(manifest.leader_pane_id); // Bounded diagnostics, never acceptance evidence.
+    rememberCapture(capture(manifest.leader_pane_id)); // Bounded diagnostics, never acceptance evidence.
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,Math.min(50,Math.max(0,deadline-Date.now())));
   }
   throw new Error('Acknowledgment timeout');
@@ -370,6 +378,8 @@ function start(root, options) {
   const manifest = {schema_version:1,team,run_id:runId,state_root:stateRoot,state_root_identity:directoryIdentity(stateRoot),project_root:root,server:supervisor[0].server,session:supervisor[0].session,supervisor_window_id:supervisor[0].window_id,supervisor_pane_id:supervisor[0].pane_id,profile:'pcaom-ds41',spec_path:specPath,spec_digest:specDigest,context_path:contextPath,context_digest:digest(context),state:'starting'};
   let published = false;
   const buffers = [];
+  let lastLeaderCapture = '';
+  const rememberCapture = output => { lastLeaderCapture = redact(output).slice(-8192); };
   let primary;
   try {
     stage = 'launch';
@@ -382,7 +392,8 @@ function start(root, options) {
     });
     deadline = Date.now()+options['startup-timeout-ms'];
     stage = 'readiness';
-    waitForLeader(manifest);
+    waitForLeader(manifest,rememberCapture);
+    deadline = undefined;
     const id = randomUUID();
     stage = 'handoff';
     const buffer = `pcaom-${team}-${id}`;
@@ -400,7 +411,9 @@ function start(root, options) {
     run('tmux',['paste-buffer','-t',manifest.leader_pane_id,'-b',buffer,'-p','-d']);
     run('tmux',['send-keys','-t',manifest.leader_pane_id,'Enter']);
     stage = 'acceptance';
-    waitForAcknowledgment(manifest,acknowledgmentPath,acknowledgment);
+    deadline = Date.now()+options['startup-timeout-ms'];
+    waitForAcknowledgment(manifest,acknowledgmentPath,acknowledgment,rememberCapture);
+    deadline = undefined;
     manifest.state = 'accepted';
     atomicWrite(manifestPath,JSON.stringify(manifest,null,2)+'\n',true);
     stage = 'go';
@@ -435,6 +448,15 @@ function start(root, options) {
     if (goMayBeDelivered) manifest.delivery = 'uncertain';
     else manifest.state = 'failed';
     manifest.failure_stage = stage; manifest.diagnostic = redact(error.message).slice(-2000);
+    if (published && lastLeaderCapture) {
+      const diagnosticPath = path.join(directory,'leader-pane-diagnostic.txt');
+      try {
+        atomicWrite(diagnosticPath,lastLeaderCapture.endsWith('\n') ? lastLeaderCapture : lastLeaderCapture+'\n');
+        manifest.leader_diagnostic_path = path.relative(root,diagnosticPath);
+      } catch (diagnosticError) {
+        manifest.leader_diagnostic_error = redact(diagnosticError.message).slice(-2000);
+      }
+    }
     if (published && !goMayBeDelivered) {
       const recorded = JSON.parse(readRegular(manifestPath));
       requireThat(recorded.window_id === manifest.window_id && recorded.leader_pane_id === manifest.leader_pane_id && recorded.session === manifest.session, 'Manifest changed; rollback refused');
@@ -501,14 +523,25 @@ function teamNamespace(context) {
   const root = path.join(context.stateRoot,'team');
   if (pathAbsent(root)) return [];
   directoryIdentity(root);
-  const entries = fs.readdirSync(root);
-  requireIdentity(entries.length <= 1, 'Isolated Team namespace contains extra candidates');
-  for (const name of entries) {
+  const entries = fs.readdirSync(root,{withFileTypes:true});
+  const notices = entries.filter(entry => entry.name === 'notice-ledger.json');
+  requireIdentity(notices.length <= 1 && notices.every(entry => entry.isFile() && !entry.isSymbolicLink()), 'Invalid Team notice ledger');
+  for (const entry of notices) {
+    let notice;
+    try { notice = JSON.parse(readBounded(path.join(root,entry.name))); }
+    catch { requireIdentity(false, 'Malformed Team notice ledger'); }
+    requireIdentity(notice && typeof notice === 'object' && !Array.isArray(notice), 'Malformed Team notice ledger');
+  }
+  const candidates = entries.filter(entry => entry.name !== 'notice-ledger.json');
+  requireIdentity(candidates.length <= 1, 'Isolated Team namespace contains extra candidates');
+  for (const entry of candidates) {
+    const name = entry.name;
+    requireIdentity(entry.isDirectory() && !entry.isSymbolicLink(), 'Malformed Team directory entry');
     requireIdentity(matches(name,/^[a-z0-9][a-z0-9-]{0,29}$/), 'Malformed Team directory name');
     directoryIdentity(path.join(root,name));
     requireIdentity(pathAbsent(path.join(root,name,'.membership-task-transaction.json')), 'Membership transaction journal requires runtime recovery');
   }
-  return entries;
+  return candidates.map(entry => entry.name);
 }
 function readBinding(context,internalName) {
   try {

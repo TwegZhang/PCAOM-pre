@@ -52,7 +52,9 @@ The overlay must not set `forced_login_method`: that setting restricts the share
 Codex Home's authentication method and can log out an existing ChatGPT subscription
 session. Explicit `model_provider = "deepseek"` plus provider `env_key =
 "DEEPSEEK_API_KEY"` selects DeepSeek without changing the official supervisor's
-login identity.
+login identity. The standalone DS41 Profile also sets
+`check_for_update_on_startup = false` so an update chooser cannot intercept the
+non-interactive Leader handoff. Official Codex keeps its own update policy.
 
 ## Prerequisites and activation
 
@@ -128,17 +130,20 @@ model_reasoning_effort="high"`; the explicit model prevents OMX from appending a
 different configured default before Codex loads the standalone Profile. Because
 Codex shell initialization can restore a user's global worker arguments, the
 Leader re-exports these exact values in the same shell command that invokes Team
-and verifies every generated startup script before binding. Start
-Team with an explicit executor role (`N:executor`), verify one approved lane per
-Worker before implementation, and do not nest Codex native subagents under DS41
-Workers. Specs that require exact lane preservation also need a matching approved
+and verifies every generated startup script before binding. Use the approved DAG
+launch hint, verify one approved lane per Worker before implementation, and do not
+nest Codex native subagents under DS41 Workers. On pinned OMX 0.21.6, both a
+role-agnostic `N` launch and `N:executor` can group overlapping lanes onto one
+Worker; an explicit shared role is not a lane-preservation mechanism. Specs that
+require exact lane preservation also need a matching approved
 OMX PRD/test-spec pair and Team DAG sidecar; legacy text decomposition is not
 accepted as proof of lane ownership. The Leader uses that approved launch hint
-verbatim—even if it omits a shared agent type—so OMX can preserve distinct
-per-node roles. Independent nodes need distinct file/domain and task-text hints,
-because OMX deliberately groups overlapping scopes. The Leader then verifies the
-persisted owners. The supervisor independently rereads the workspace and runs
-acceptance checks after execution. The recorded synthetic r14 observation verifies
+verbatim. Independent nodes need distinct file/domain and task-text hints, because
+OMX may group overlapping scopes. The Leader then verifies persisted owners and
+fails closed before implementation when allocation collapses. PCAOM does not
+rewrite OMX ownership or replace its allocator. The supervisor independently
+rereads the workspace and runs acceptance checks after execution. The recorded
+synthetic r14 observation verifies
 this bounded topology once; other repositories and uncovered lifecycle paths still
 require their own evidence.
 
@@ -173,6 +178,17 @@ Ultragoal and Team lifecycle. Never activate Larry DSH on the same task tree.
 
 Start uses ACK → GO: the Leader validates context and writes
 `leader-accepted.json`, then ends its turn before a distinct GO permits execution.
+Before sending either message, the bridge requires the real interactive composer
+marker. It recognizes the Codex update chooser as `LEADER_TUI_BLOCKED` and sends no
+handoff into that modal. A failed startup preserves a bounded, redacted local
+`leader-pane-diagnostic.txt` beside the run manifest for diagnosis. Readiness and
+ACK use separate timeout budgets, so time spent launching the TUI does not consume
+the Leader's acknowledgment interval.
+
+Within the isolated Team state root, the bridge accepts the sole Team directory
+plus OMX 0.21.6's validated regular JSON sidecar `notice-ledger.json`. Unknown
+entries, malformed sidecars, symlinks, aliases, or a second Team candidate still
+fail closed.
 An uncertain `go_submitting` is never automatically replayed. Each run creates
 an isolated `<project>/.omx-pcaom-team-state/<run_id>` and passes its canonical
 path as `OMX_TEAM_STATE_ROOT` to Leader/Workers. The frozen filesystem identity

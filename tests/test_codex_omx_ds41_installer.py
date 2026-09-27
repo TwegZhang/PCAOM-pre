@@ -144,6 +144,9 @@ class CodexOmxDs41InstallerTests(unittest.TestCase):
         self.assertEqual(set(actual), set(expected + self.receipts()))
         self.assertEqual((self.bundle / "codex/pcaom-ds41.config.toml").read_bytes(), original)
         json.loads((self.codex_home / "model-catalogs/pcaom-deepseek-models.json").read_text())
+        if tomllib is not None:
+            profile = tomllib.loads((self.codex_home / "pcaom-ds41.config.toml").read_text())
+            self.assertIs(profile["check_for_update_on_startup"], False)
         for op in data["operations"]:
             self.assertEqual(op["digest"], hashlib.sha256(Path(op["destination"]).read_bytes()).hexdigest())
 

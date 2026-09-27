@@ -57,7 +57,9 @@ Before `start`, establish all of the following:
   The overlay must not contain `forced_login_method`: it would restrict authentication
   for the shared Codex Home and can log out the official ChatGPT subscription.
   The explicit `model_provider = "deepseek"` and provider environment key select
-  DS41 without changing the supervisor's login method.
+  DS41 without changing the supervisor's login method. It must also set
+  `check_for_update_on_startup = false` so the DS41-only non-interactive launch is
+  not intercepted by the Codex update chooser.
 - `DEEPSEEK_API_KEY` is present in the trusted launcher environment and inherited
   by DS41. Check presence without displaying the value; never put it in command
   arguments, handoffs, artifacts, logs, or observations.
@@ -127,28 +129,35 @@ manifest freezes its path and filesystem dev/ino/uid; replacement or symlink
 substitution fails closed. This two-level layout preserves pinned OMX API cwd
 derivation (`dirname(dirname(state_root))` is the project root).
 
-After GO, invoke Team with an explicit executor role, for example `omx team
-3:executor "<approved task summary>"`. Give one independent approved lane to
-each Worker and verify persisted task ownership before implementation. DS41
+After GO, invoke Team with the exact approved DAG launch hint. Give one independent
+approved lane to each Worker and verify persisted task ownership before
+implementation. On pinned OMX 0.21.6, both role-agnostic `N` and explicit shared
+role `N:executor` launches can group overlapping lanes onto one Worker; neither
+form proves lane preservation. DS41
 Workers are terminal execution lanes: they must not spawn Codex native
 subagents, nested Teams, or another orchestration layer. If OMX cannot preserve
 the lane split, report the mismatch instead of silently collapsing work onto one
-Worker. These are workflow constraints; runtime smoke must still verify the
-actual model, ownership, panes, and worktrees.
+Worker. Do not rewrite terminal task ownership, patch the OMX allocator, or start
+implementation under a collapsed allocation. These are workflow constraints;
+runtime smoke must still verify the actual model, ownership, panes, and worktrees.
 
 OMX legacy text decomposition can turn an enumerated feature into generic
 implementation/test tasks. When the approved Spec requires exact independent
 lanes, Official Codex must also supply a matching approved OMX planning pair and
 Team DAG sidecar under `.omx/plans/`; the DS41 Leader uses that artifact's exact
 approved launch hint and requires `decomposition_source = "dag_sidecar"` before
-binding. Use the approved hint verbatim even when it is role-agnostic: an
-explicit `N:executor` launch overrides per-node DAG roles and can group multiple
-lanes onto one Worker. Give independent DAG nodes distinct `filePaths`, `domains`,
-subjects, and descriptions; repeated non-stopword hints can intentionally group
-related work on one Worker. Do not claim lane preservation from the natural-language
-task or DAG node count alone; verify the persisted owners.
+binding. Use the approved hint verbatim. Give independent DAG nodes distinct
+`filePaths`, `domains`, subjects, and descriptions; repeated non-stopword hints
+can group related work on one Worker. Do not claim lane preservation from the
+launch syntax, natural-language task, or DAG node count alone; verify the
+persisted owners.
 
-Require interactive startup evidence before delivering context. Use a fresh
+Require the actual Codex interactive composer marker before delivering context;
+`pane_current_command=codex` alone is not readiness evidence. Detect the startup
+update chooser first and fail with `LEADER_TUI_BLOCKED` without sending handoff
+text. On startup failure, preserve the latest bounded redacted pane capture as
+`leader-pane-diagnostic.txt` and record its relative path in the run manifest.
+Use a fresh
 named-buffer for the handoff: load the exact text into a uniquely named tmux
 buffer, read it back and compare, clear the intended pane composer, then use
 bracketed paste from that named buffer and submit intentionally. Pane capture is
@@ -209,7 +218,10 @@ Official Codex does not start either workflow on the Leader's behalf. Use OMX's
 existing task, mailbox, worktree, and lifecycle interfaces; the bridge owns no
 replacement task store. Normal subprocess commands have a 5000 ms timeout;
 `--command-timeout-ms` provides an explicit bounded override for start/inspect
-diagnostics. `--startup-timeout-ms` bounds the ACK/GO startup sequence.
+diagnostics. `--startup-timeout-ms` is applied as two separate timers. This gives
+independent readiness and acknowledgment budgets: the acknowledgment deadline
+starts only after the verified handoff submission, and a fresh readiness budget
+is used before GO.
 
 ## Observe, wait, and steer
 
@@ -262,9 +274,12 @@ does not establish mailbox supervision.
 All lifecycle operations require the Leader's binding and revalidate exact
 internal name, isolated root identity, creation time, Leader cwd/pane/PID,
 tmux generation/session/window, owner token and configured worker panes/worktrees.
-The root must have exactly one safe Team directory: additional candidates,
-including terminal aliases, malformed entries, symlinks and membership journals
-fail before invocation. Aliases in other roots do not participate. Every OMX
+The root must have exactly one safe Team directory. The exact regular, non-symlink
+`notice-ledger.json` file is accepted as an OMX 0.21.6 runtime sidecar only when it
+contains a bounded JSON object; it is never a Team candidate. Additional candidates,
+including terminal aliases, unknown files, malformed entries, symlinks and
+membership journals fail before invocation. Aliases in other roots do not
+participate. Every OMX
 API/CLI call receives the actual internal name and exact `OMX_TEAM_STATE_ROOT`,
 with binding/root/Team/tmux checks before and after. Shutdown instead checks the
 terminal removal conditions below. Root environment overrides must match this
