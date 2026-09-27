@@ -11,6 +11,10 @@
   `sandbox_mode = "danger-full-access"` in the exact trusted synthetic project.
   This was necessary for Git worktree metadata and the existing tmux socket and
   is not a safe default for arbitrary repositories.
+- This run used a disposable Codex Home without an existing ChatGPT subscription
+  login. It therefore did not test authentication coexistence in the user's normal
+  Codex Home. The later O2 deployment observation supersedes the original
+  `forced_login_method` assumption for shared-home installation.
 
 ## Successful r14 evidence
 

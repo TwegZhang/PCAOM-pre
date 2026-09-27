@@ -14,5 +14,8 @@
     "worktree": "runtime-smoke-verified",
     "final_review": "runtime-smoke-verified"
   },
-  "evidence": ["docs/observations/2026-09-27-codex-omx-ds41-runtime-smoke.md"]
+  "evidence": [
+    "docs/observations/2026-09-27-codex-omx-ds41-runtime-smoke.md",
+    "docs/observations/2026-09-27-o2-ds41-deployment-auth-regression.md"
+  ]
 }

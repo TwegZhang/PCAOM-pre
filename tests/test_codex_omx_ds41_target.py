@@ -94,6 +94,7 @@ class CodexOmxDs41TargetTests(unittest.TestCase):
         })
         self.assertEqual(target["evidence"], [
             "docs/observations/2026-09-27-codex-omx-ds41-runtime-smoke.md",
+            "docs/observations/2026-09-27-o2-ds41-deployment-auth-regression.md",
         ])
 
     def test_profile_uses_environment_auth_and_separate_profile_file(self):
@@ -101,7 +102,6 @@ class CodexOmxDs41TargetTests(unittest.TestCase):
         expected_text = '''model = "deepseek-flash"
 model_provider = "deepseek"
 model_reasoning_effort = "high"
-forced_login_method = "api"
 web_search = "disabled"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
@@ -125,7 +125,7 @@ trust_level = "trusted"
                          expected_text.encode("utf-8"))
         expected_profile = {
             "model": "deepseek-flash", "model_provider": "deepseek",
-            "model_reasoning_effort": "high", "forced_login_method": "api",
+            "model_reasoning_effort": "high",
             "web_search": "disabled", "approval_policy": "never",
             "sandbox_mode": "danger-full-access",
             "model_catalog_json": "__PCAOM_MODEL_CATALOG_PATH__",
@@ -141,6 +141,7 @@ trust_level = "trusted"
         if tomllib is not None:
             self.assertEqual(tomllib.loads(text), expected_profile)
         self.assertNotIn("experimental_bearer_token", text)
+        self.assertNotIn("forced_login_method", text)
         self.assertNotIn("[profiles.", text)
         self.assertNotRegex(text, r"sk-[A-Za-z0-9]")
 

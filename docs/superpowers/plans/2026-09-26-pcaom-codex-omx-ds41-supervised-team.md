@@ -203,7 +203,6 @@ Write exactly one standalone Codex profile file, not a `[profiles.*]` table:
 model = "deepseek-flash"
 model_provider = "deepseek"
 model_reasoning_effort = "high"
-forced_login_method = "api"
 web_search = "disabled"
 model_catalog_json = "__PCAOM_MODEL_CATALOG_PATH__"
 

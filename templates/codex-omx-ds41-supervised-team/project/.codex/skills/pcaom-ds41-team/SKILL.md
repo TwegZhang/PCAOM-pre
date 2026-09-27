@@ -54,6 +54,10 @@ Before `start`, establish all of the following:
   provide. Treat this as a high-risk automation profile and use only on an explicitly
   authorized repository and trusted machine. Preserve official Codex's default
   configuration and subscription identity; never accept another project path.
+  The overlay must not contain `forced_login_method`: it would restrict authentication
+  for the shared Codex Home and can log out the official ChatGPT subscription.
+  The explicit `model_provider = "deepseek"` and provider environment key select
+  DS41 without changing the supervisor's login method.
 - `DEEPSEEK_API_KEY` is present in the trusted launcher environment and inherited
   by DS41. Check presence without displaying the value; never put it in command
   arguments, handoffs, artifacts, logs, or observations.

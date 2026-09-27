@@ -158,7 +158,7 @@ function validateProfile(home, root) {
   requireThat(!text.includes(secret), 'Profile contains credential');
   const projectSection = `projects.${JSON.stringify(root)}`;
   const expected = {
-    '': {model:'deepseek-flash', model_provider:'deepseek', model_reasoning_effort:'high', forced_login_method:'api', web_search:'disabled', approval_policy:'never', sandbox_mode:'danger-full-access', model_catalog_json:path.join(home,'model-catalogs/pcaom-deepseek-models.json')},
+    '': {model:'deepseek-flash', model_provider:'deepseek', model_reasoning_effort:'high', web_search:'disabled', approval_policy:'never', sandbox_mode:'danger-full-access', model_catalog_json:path.join(home,'model-catalogs/pcaom-deepseek-models.json')},
     'model_providers.deepseek': {name:'DeepSeek', base_url:'https://api.deepseek.com/', wire_api:'responses', env_key:'DEEPSEEK_API_KEY', env_key_instructions:'Set DEEPSEEK_API_KEY in the trusted launcher environment.'},
     'tui': {screen_reader_detection_done:true, hide_full_access_warning:true},
     [projectSection]: {trust_level:'trusted'},
@@ -183,7 +183,7 @@ function validateProfile(home, root) {
     requireThat((encoded === 'true' ? true : JSON.parse(encoded)) === expected[section][key], `Invalid profile ${key}`);
     seen.add(identity);
   }
-  requireThat(seen.size === 16 && sections.size === 3, 'Incomplete profile');
+  requireThat(seen.size === 15 && sections.size === 3, 'Incomplete profile');
   const catalogPath = expected[''].model_catalog_json;
   requireThat(path.isAbsolute(catalogPath), 'Catalog path must be absolute');
   const catalog = JSON.parse(readRegular(catalogPath));

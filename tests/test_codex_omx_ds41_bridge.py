@@ -1004,7 +1004,8 @@ class BridgeTests(unittest.TestCase):
 
     def test_profile_rejects_endpoint_sections_duplicates_and_provider(self):
         original=self.profile.read_text()
-        for altered in [original.replace('https://api.deepseek.com/','https://unauthorized.example/'), original+'\nmodel = "deepseek-flash"\n', original.replace('[model_providers.deepseek]','[model_providers.other]'), original.replace('model_provider = "deepseek"','model_provider = "other"'), original+'\n[model_providers.other]\nname = "Other"\n', original.replace('forced_login_method = "api"','forced_login_method = "chatgpt"'), original.replace('approval_policy = "never"','approval_policy = "on-request"'), original.replace('sandbox_mode = "danger-full-access"','sandbox_mode = "workspace-write"')]:
+        forced_login=original.replace('[model_providers.deepseek]','forced_login_method = "api"\n\n[model_providers.deepseek]')
+        for altered in [original.replace('https://api.deepseek.com/','https://unauthorized.example/'), original+'\nmodel = "deepseek-flash"\n', original.replace('[model_providers.deepseek]','[model_providers.other]'), original.replace('model_provider = "deepseek"','model_provider = "other"'), original+'\n[model_providers.other]\nname = "Other"\n', forced_login, original.replace('approval_policy = "never"','approval_policy = "on-request"'), original.replace('sandbox_mode = "danger-full-access"','sandbox_mode = "workspace-write"')]:
             self.profile.write_text(altered)
             result,data=self.start()
             self.assert_failure((result,data),'preflight')

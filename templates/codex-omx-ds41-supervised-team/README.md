@@ -48,6 +48,11 @@ socket. This is a high-risk automation profile: use it only for explicitly
 authorized repositories on a trusted machine. It does not trust parent directories
 or other projects, but its shell commands are not filesystem-sandboxed. Installation
 must preserve the user's default Codex configuration and unrelated project instructions.
+The overlay must not set `forced_login_method`: that setting restricts the shared
+Codex Home's authentication method and can log out an existing ChatGPT subscription
+session. Explicit `model_provider = "deepseek"` plus provider `env_key =
+"DEEPSEEK_API_KEY"` selects DeepSeek without changing the official supervisor's
+login identity.
 
 ## Prerequisites and activation
 
@@ -224,3 +229,6 @@ promotion. Mailbox supervision requires its own round-trip evidence; a fallback
 does not verify the experimental bridge or unrelated runtime capabilities.
 The partial synthetic runtime evidence and per-capability verdict are recorded in
 [the runtime observation](../../docs/observations/2026-09-27-codex-omx-ds41-runtime-smoke.md).
+The later [O2 deployment observation](../../docs/observations/2026-09-27-o2-ds41-deployment-auth-regression.md)
+records and fixes the shared-home `forced_login_method` regression while preserving
+the existing ChatGPT subscription login method.
