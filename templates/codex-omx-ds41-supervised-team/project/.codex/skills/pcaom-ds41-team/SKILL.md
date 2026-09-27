@@ -36,9 +36,9 @@ Before `start`, establish all of the following:
 - An exact downstream workspace/worktree and explainable branch, diff, and
   existing Team state. Preserve existing work and identify lane ownership.
   OMX Team requires a clean Git workspace before launch. Commit or otherwise
-  deliberately account for the installed Skill, approved Spec, and planning
+  commit the project Skill and bridge with the approved Spec and planning
   artifacts; ignore generated `.omx/`, `.omx-pcaom-team-state/`, and installer
-  receipt paths as appropriate for the downstream repository. The bridge checks
+  receipt paths. The bridge checks
   tracked and untracked status and fails before window creation when it is dirty.
 - Explicit authorization covering the context and artifacts sent to DeepSeek.
   Do not infer data-transfer authorization from the presence of a credential.

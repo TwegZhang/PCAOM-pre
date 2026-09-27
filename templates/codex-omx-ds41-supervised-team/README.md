@@ -57,11 +57,11 @@ login identity.
 ## Prerequisites and activation
 
 OMX Team starts only from a clean Git workspace. Before invoking the bridge,
-commit or deliberately account for the installed Skill, approved Spec, and any
+commit the project Skill and bridge together with the approved Spec and any
 approved Team DAG. Add downstream ignore rules for generated `.omx/`,
-`.omx-pcaom-team-state/`, and installer receipts when those artifacts are not
-project-owned. The bridge checks both tracked and untracked changes before it
-creates a DS41 window and fails closed when the workspace is dirty.
+`.omx-pcaom-team-state/`, and installer receipts. The bridge checks both tracked
+and untracked changes before it creates a DS41 window and fails closed when the
+workspace is dirty.
 
 The validation baseline is Codex CLI `0.156.1`, oh-my-codex `0.21.6`, and tmux
 `3.7b`. Node.js is required for the installer and bridge. Static tests support
@@ -101,9 +101,11 @@ node install.mjs uninstall --project /absolute/project --codex-home /absolute/co
 node install.mjs uninstall --project /absolute/project --codex-home /absolute/codex-home
 ```
 
-Installation rejects unmanaged conflicts; uninstall removes only files
-whose ownership and current digest match the paired installation receipts. Neither command
-starts Codex or a Team.
+Installation rejects mismatched project Skill files, but accepts an identical
+repository copy on a fresh clone. Install and upgrade may write project Skill
+files so Git exposes a reviewable diff. Uninstall removes only machine-local
+Codex files and paired receipts; it preserves project-scoped Skill files.
+Neither command starts Codex or a Team.
 
 Supply `DEEPSEEK_API_KEY` through the trusted launcher environment. The profile
 stores only the environment variable name. Never put its value in artifacts,

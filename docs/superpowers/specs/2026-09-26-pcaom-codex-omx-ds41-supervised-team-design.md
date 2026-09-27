@@ -173,7 +173,7 @@ DS41 Profile overlay 不设置 `forced_login_method`。该字段限制共享 Cod
 选择 DeepSeek，同时保留默认官方 Codex 的 ChatGPT 登录身份。
 安装器还只在该独立 Profile 中信任本次安装的精确 canonical project root，并预置 TUI 检测状态；这是无头 Leader 避免首次启动确认所必需的项目级绑定，不修改默认配置或信任其他目录。`approval_policy = "never"` 与 `sandbox_mode = "danger-full-access"` 是 OMX Team 写 Git worktree 元数据并连接现有 tmux Unix socket 的运行前提；实测 `workspace-write` 即使增加 writable root 仍拒绝该 socket。该 Profile 属于显式高风险自动化面，只能用于已授权仓库和可信机器，不能把项目级 trust 描述成文件系统沙箱。
 
-OMX Team 还要求启动时 Git workspace 干净。Bridge 必须在创建窗口前检查 tracked 与 untracked 状态；下游项目需要提交或明确管理 Skill、Spec 与批准的 DAG，并按项目策略忽略 `.omx/`、`.omx-pcaom-team-state/` 和安装 receipt 等生成状态。Bridge 不自动修改项目 `.gitignore`。
+OMX Team 还要求启动时 Git workspace 干净。Bridge 必须在创建窗口前检查 tracked 与 untracked 状态；下游项目应提交项目级 Skill、Bridge、Spec 与批准的 DAG，并按项目策略忽略 `.omx/`、`.omx-pcaom-team-state/` 和安装 receipt 等生成状态。安装器允许 fresh clone 中内容完全一致的项目 Skill，并在卸载时保留所有 project-scope 文件；Codex Home 文件与收据仍是本机受管产物。Bridge 不自动修改项目 `.gitignore`。
 
 ## 9. 安装器边界
 
@@ -187,7 +187,7 @@ OMX Team 还要求启动时 Git workspace 干净。Bridge 必须在创建窗口�
 6. 使用临时文件和原子 rename；
 7. 回读并解析 TOML、JSON 和 Skill artifact；
 8. 生成可恢复备份和安装报告；
-9. 卸载时只删除 digest 与 manifest 匹配的受管文件；
+9. 卸载时只删除 digest 与 manifest 匹配的 Codex Home 文件和收据，保留 project-scope Skill；
 10. 不修改 `~/.codex/config.toml`，不写入 API Key，不自动启动 Codex 或 Team。
 
 ## 10. Runtime 拓扑与 UX

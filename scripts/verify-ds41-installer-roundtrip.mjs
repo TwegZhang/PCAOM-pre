@@ -162,8 +162,12 @@ if data.get("projects") != {sys.argv[2]: {"trust_level": "trusted"}}:
   assert.deepEqual([snapshot(project), snapshot(codexHome)], installed);
   phase = 'uninstall';
   run('uninstall');
-  check = 'exact-removal';
-  assert.deepEqual([files(snapshot(project)), files(snapshot(codexHome))], before.map(files));
+  check = 'project-preservation';
+  const retainedProject = files(installed[0]);
+  delete retainedProject['.pcaom/installations/codex-omx-ds41-supervised-team.json'];
+  assert.deepEqual(files(snapshot(project)), retainedProject);
+  check = 'machine-local-removal';
+  assert.deepEqual(files(snapshot(codexHome)), files(before[1]));
   assert.deepEqual(snapshot(bundle), sourceBefore);
   assert.deepEqual(snapshot(source), sourceBefore);
 } catch (error) {
@@ -190,7 +194,9 @@ if (failure || cleanupFailure) {
     ...(cleanupFailure ? { cleanup_failure: cleanupFailure } : {}) })}\n`);
   process.exitCode = 1;
 } else {
-  process.stdout.write(`${JSON.stringify({ ok: true, installer_invocations: 4, managed_files: 4,
+  process.stdout.write(`${JSON.stringify({ ok: true, installer_invocations: 4, installed_files: 4,
+    machine_managed_files: 2, project_files_preserved: 2,
     receipts: 2, sentinels_preserved: 2, dry_run_unchanged: true, reinstall_identical: true,
-    installed_json_toml: true, bundle_unchanged: true, exact_uninstall: true, temporary_removed: true })}\n`);
+    installed_json_toml: true, bundle_unchanged: true, exact_machine_local_uninstall: true,
+    temporary_removed: true })}\n`);
 }

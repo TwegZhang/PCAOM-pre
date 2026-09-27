@@ -43,6 +43,14 @@ class CodexOmxDs41InstallerTests(unittest.TestCase):
     def args(self):
         return ["install", "--project", str(self.project), "--codex-home", str(self.codex_home)]
 
+    def seed_project_skill(self):
+        for record in self.manifest["files"]:
+            if record["scope"] != "project":
+                continue
+            destination = self.project / record["destination"]
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes((self.bundle / record["source"]).read_bytes())
+
     def assert_empty(self):
         self.assertEqual(list(self.project.iterdir()), [])
         self.assertEqual(list(self.codex_home.iterdir()), [])
@@ -71,6 +79,34 @@ class CodexOmxDs41InstallerTests(unittest.TestCase):
             self.assertRegex(op["digest"], r"^[0-9a-f]{64}$")
         self.assertEqual(result.stdout, self.run_installer(*self.args(), "--dry-run").stdout)
         self.assert_empty()
+
+    def test_install_adopts_identical_repository_skill_without_overwriting_it(self):
+        self.seed_project_skill()
+        before = self.snapshot()
+        result = self.run_installer(*self.args())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertIs(data["ok"], True)
+        for path, content in before.items():
+            self.assertEqual(Path(path).read_bytes(), content)
+
+    def test_install_rejects_mismatched_repository_skill(self):
+        self.seed_project_skill()
+        target = self.project / ".codex/skills/pcaom-ds41-team/SKILL.md"
+        target.write_text("modified")
+        before = self.snapshot()
+        result = self.run_installer(*self.args())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_uninstall_preserves_repository_skill(self):
+        self.install_ok()
+        project_files = {path: content for path, content in self.snapshot().items()
+                         if path.startswith(str(self.project / ".codex/skills/pcaom-ds41-team"))}
+        result = self.run_installer("uninstall", "--project", str(self.project),
+                                    "--codex-home", str(self.codex_home))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.snapshot(), project_files)
 
     def test_install_writes_exactly_four_files_and_resolves_catalog(self):
         original = (self.bundle / "codex/pcaom-ds41.config.toml").read_bytes()
@@ -262,7 +298,9 @@ class CodexOmxDs41InstallerTests(unittest.TestCase):
             backups[str(backup)] = backup.read_bytes()
         result = self.run_installer('uninstall', *self.args()[1:])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.snapshot(), backups)
+        retained = {path: content for path, content in self.snapshot().items()
+                    if path.startswith(str(self.project / '.codex/skills/pcaom-ds41-team'))}
+        self.assertEqual(self.snapshot(), backups | retained)
 
     def test_modified_file_blocks_uninstall_and_install(self):
         self.install_ok()
@@ -274,9 +312,11 @@ class CodexOmxDs41InstallerTests(unittest.TestCase):
         self.install_ok()
         unrelated = self.project / '.codex/skills/unrelated.txt'
         unrelated.write_text('keep')
+        retained = {path: content for path, content in self.snapshot().items()
+                    if path.startswith(str(self.project / '.codex/skills/pcaom-ds41-team'))}
         result = self.run_installer('uninstall', *self.args()[1:])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.snapshot(), {str(unrelated): b'keep'})
+        self.assertEqual(self.snapshot(), retained | {str(unrelated): b'keep'})
 
     def inject(self, before, after):
         script = self.bundle / 'install.mjs'
@@ -310,7 +350,7 @@ class CodexOmxDs41InstallerTests(unittest.TestCase):
         before = self.snapshot()
         result = self.run_installer('uninstall', *self.args()[1:], '--dry-run')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(json.loads(result.stdout)['actions']), 6)
+        self.assertEqual(len(json.loads(result.stdout)['actions']), 4)
         self.assertEqual(self.snapshot(), before)
 
     def test_receipt_write_failure_restores_upgrade_and_backups(self):
@@ -347,8 +387,8 @@ class CodexOmxDs41InstallerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         for directory in shared:
             self.assertTrue(directory.is_dir(), str(directory))
-        self.assertFalse((self.project / '.codex/skills/pcaom-ds41-team').exists())
-        self.assertEqual(self.snapshot(), {})
+        self.assertTrue((self.project / '.codex/skills/pcaom-ds41-team').is_dir())
+        self.assertEqual(len(self.snapshot()), 2)
 
     def test_uninstall_rollback_diagnostic_checks_actual_restored_state(self):
         self.install_ok()
@@ -381,7 +421,7 @@ class CodexOmxDs41InstallerTests(unittest.TestCase):
         (self.bundle / 'codex/pcaom-ds41.config.toml').write_text('changed source without marker')
         result = self.run_installer('uninstall', *self.args()[1:])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.snapshot(), {})
+        self.assertEqual(len(self.snapshot()), 2)
 
     def test_receipt_change_before_mutation_fails_closed(self):
         self.install_ok()
@@ -403,11 +443,6 @@ class CodexOmxDs41InstallerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn(secret, result.stdout + result.stderr)
         self.assertTrue(json.loads(result.stdout)['ok'])
-
-    def test_uninstall_cleanup_fault_restores_files(self):
-        self.install_ok()
-        self.inject('    rmdirSync(path);', '    rmdirSync(path); throw new Error("cleanup fault");')
-        self.fails_unchanged('uninstall', *self.args()[1:])
 
     def test_directory_identity_change_before_mutation_fails(self):
         self.install_ok()
@@ -491,26 +526,6 @@ class CodexOmxDs41InstallerTests(unittest.TestCase):
         diagnostic = json.loads(result.stderr)
         self.assertEqual(diagnostic['error'], 'rollback-failed')
         self.assertIn(str(self.project / '.codex/skills/pcaom-ds41-team'), diagnostic['rollbackProblems'])
-
-    def test_uninstall_cleanup_preserves_external_tree_after_ancestor_substitution(self):
-        self.install_ok()
-        external = self.root / 'external'
-        external_skill = external / 'skills/pcaom-ds41-team'
-        (external_skill / 'scripts').mkdir(parents=True)
-        moved = self.project / '.codex-moved'
-        self.inject('statSync, unlinkSync,', 'statSync, symlinkSync, unlinkSync,')
-        boundary = 'try { removeEmptyParents(action.root, action.destination, identities); }'
-        self.inject(boundary,
-                    'if (action.destination.endsWith("SKILL.md")) { '
-                    'renameSync(' + json.dumps(str(self.project / '.codex')) + ', ' + json.dumps(str(moved)) + '); '
-                    'symlinkSync(' + json.dumps(str(external)) + ', ' + json.dumps(str(self.project / '.codex')) + '); } '
-                    + boundary)
-        result = self.run_installer('uninstall', *self.args()[1:])
-        self.assertNotEqual(result.returncode, 0)
-        self.assertTrue((external_skill / 'scripts').is_dir())
-        self.assertTrue((moved / 'skills/pcaom-ds41-team/scripts').is_dir())
-        diagnostic = json.loads(result.stderr)
-        self.assertIn(str(self.project / '.codex/skills/pcaom-ds41-team'), diagnostic['rollbackConflicts'])
 
     def test_rollback_cleanup_preserves_replaced_directory_identity(self):
         skill = self.project / '.codex/skills/pcaom-ds41-team'

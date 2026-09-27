@@ -394,10 +394,14 @@ try {
   const old = loadReceipt(receipts, options, files);
   for (const [index, operation] of operations.entries()) {
     const bytes = existingBytes(destinationRoot(operation.scope, options), operation.destination);
-    requireValid(old ? bytes !== null && sha256(bytes) === old.files[index].sha256 : bytes === null,
+    const validExisting = old
+      ? (options.command === "uninstall" && operation.scope === "project") ||
+        (bytes !== null && sha256(bytes) === old.files[index].sha256)
+      : operation.scope === "project" ? bytes === null || sameBytes(bytes, operation.bytes) : bytes === null;
+    requireValid(validExisting,
       `Unmanaged or modified destination: ${operation.destination}`);
     operation.before = bytes;
-    if (options.command === "uninstall") operation.digest = sha256(bytes);
+    if (options.command === "uninstall" && bytes !== null) operation.digest = sha256(bytes);
   }
   const receiptBytes = Buffer.from(`${JSON.stringify({ schema_version: 0, owner: OWNER,
     project_root: options.projectRoot, codex_home: options.codexHome,
@@ -414,7 +418,10 @@ try {
       actions.push({ action: "backup", root, destination, bytes, before: backup });
     }
   }
-  actions.push(...operations.map((op) => ({ action: options.command === "install" ? "write" : "delete",
+  const mutableOperations = options.command === "install"
+    ? operations
+    : operations.filter((operation) => operation.scope !== "project");
+  actions.push(...mutableOperations.map((op) => ({ action: options.command === "install" ? "write" : "delete",
     root: destinationRoot(op.scope, options), destination: op.destination, bytes: op.bytes, before: op.before })));
   actions.push(...receipts.map((op) => ({ ...op, action: options.command === "install" ? "receipt" : "delete", bytes: receiptBytes })));
   const paths = actions.map((op) => op.destination);
